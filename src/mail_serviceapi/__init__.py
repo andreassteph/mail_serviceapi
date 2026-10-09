@@ -113,7 +113,15 @@ class MailClient:
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         for attempt in range(self.max_retries + 1):
-            response = self._http.request(method, path, **kwargs)
+            try:
+                response = self._http.request(method, path, **kwargs)
+            except httpx.TransportError:
+                # a pooled keep-alive connection the server already closed;
+                # only reads are safe to repeat
+                if method != "GET" or attempt == self.max_retries:
+                    raise
+                time.sleep(1)
+                continue
             if response.status_code != 429 or attempt == self.max_retries:
                 break
             time.sleep(int(response.headers.get("Retry-After", "1")))
