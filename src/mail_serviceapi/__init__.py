@@ -9,7 +9,10 @@ Differences from the raw API:
   item at a time and fetch the next page only when the current one is used up;
 - `user` (the `{user}` in every path) defaults to the client's user;
 - a non-2xx answer raises `MailClientError`; a 429 is retried after
-  `Retry-After` seconds, up to `max_retries` times.
+  `Retry-After` seconds, up to `max_retries` times;
+- a dropped connection (e.g. a stale keep-alive one) is retried up to
+  `max_retries` times for idempotent requests (GET, PUT, DELETE) only; POST
+  and PATCH raise at once, as a repeat could apply their effect twice.
 """
 
 import time
@@ -35,6 +38,9 @@ from mail_serviceapi.models import (
 __all__ = ["MailClient", "MailClientError"]
 
 UNSET: Any = object()  # "leave unchanged", distinct from None ("set to null")
+
+# methods repeated after a dropped connection; POST and PATCH are not
+_IDEMPOTENT = frozenset({"GET", "PUT", "DELETE"})
 
 
 class MailClientError(Exception):
@@ -117,8 +123,8 @@ class MailClient:
                 response = self._http.request(method, path, **kwargs)
             except httpx.TransportError:
                 # a pooled keep-alive connection the server already closed;
-                # only reads are safe to repeat
-                if method != "GET" or attempt == self.max_retries:
+                # only idempotent requests are safe to repeat
+                if method not in _IDEMPOTENT or attempt == self.max_retries:
                     raise
                 time.sleep(1)
                 continue

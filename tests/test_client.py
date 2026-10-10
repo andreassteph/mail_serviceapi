@@ -320,6 +320,42 @@ def test_rate_limit_is_retried_after_retry_after(monkeypatch):
     assert slept == [2]
 
 
+def dropped_once(answer: httpx.Response):
+    """Handler whose first call fails like a closed keep-alive connection."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) == 1:
+            raise httpx.RemoteProtocolError(
+                "Server disconnected without sending a response.", request=request
+            )
+        return answer
+
+    return handler
+
+
+def test_put_is_retried_after_a_dropped_connection(monkeypatch):
+    monkeypatch.setattr(mail_serviceapi.time, "sleep", lambda s: None)
+    answer = fake_mail("a", categories=["Rechnungen"], droppedCategories=[])
+    path = f"{BASE}/mails/a/categories"
+    server = FakeServer({("PUT", path): dropped_once(httpx.Response(200, json=answer))})
+    result = server.client().categorize_mail("a", ["Rechnungen"])
+    assert result.categories == ["Rechnungen"]
+    assert [r.method for r in server.requests] == ["PUT", "PUT"]
+
+
+def test_post_is_not_retried_after_a_dropped_connection(monkeypatch):
+    monkeypatch.setattr(mail_serviceapi.time, "sleep", lambda s: None)
+    draft = {"draftKey": "d1", "mail": None, "url": "https://x/d1"}
+    server = FakeServer(
+        {("POST", f"{BASE}/drafts"): dropped_once(httpx.Response(201, json=draft))}
+    )
+    with pytest.raises(httpx.RemoteProtocolError):
+        server.client().create_draft("Danke")
+    assert len(server.requests) == 1
+
+
 def test_rate_limit_gives_up_after_max_retries(monkeypatch):
     monkeypatch.setattr(mail_serviceapi.time, "sleep", lambda s: None)
     limited = httpx.Response(
