@@ -3,7 +3,7 @@
   "info": {
     "title": "Mailclient service API",
     "description": "REST API for scripts and backend services: read mail, sort it into categories, create drafts. Every request is scoped to one user named in the path. Scripts and assistants that prefer tools use the MCP server instead, which offers the same capabilities with the same rules (see the guide \"REST or MCP\" in the documentation).",
-    "version": "0.9.1"
+    "version": "0.11.3"
   },
   "servers": [
     {
@@ -59,6 +59,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -133,6 +136,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -222,6 +228,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -286,6 +295,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -331,7 +343,7 @@
           "Attachments"
         ],
         "summary": "An image of the mail body",
-        "description": "The bytes of a stored image, with the type detected from the bytes. Cached privately for a day. REST only; the links come from `images` of the mail.",
+        "description": "The bytes of a stored image, with the type detected from the bytes. Cached privately for a day. A linked image that is still `pending` is downloaded from the sender when first requested (at most 120 per user and minute, then 429); tracking pixels are never downloaded (`skipped`). REST only; the links come from `images` of the mail.",
         "externalDocs": {
           "description": "Documentation",
           "url": "/help/api/source-and-images.md#get-mailskeyimagesimageid"
@@ -370,11 +382,14 @@
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
           "404": {
-            "description": "No such mail or image (`unknown_key`, `not_found`), or the image is not stored (`image_unavailable`; `status` is `pending`, `failed` or `skipped`).",
+            "description": "No such mail or image (`unknown_key`, `not_found`), or the image is not stored (`image_unavailable`; `status` is `failed`, `skipped`, or `pending` after a download that failed and will be retried).",
             "content": {
               "application/json": {
                 "schema": {
@@ -549,6 +564,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -606,6 +624,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -675,6 +696,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -699,6 +723,1461 @@
           {
             "oauth2": [
               "categories:write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/contacts": {
+      "get": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "List contacts",
+        "description": "The user's contacts, people and companies, by id, at most 100 per call; with `format=jcard` each contact is a jCard array. MCP equivalent: `list_contacts`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#get-contacts"
+        },
+        "operationId": "listContacts",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Search in name, company, domains, email addresses and phone numbers, e.g. \"kunde a\".",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Only \"person\" or only \"company\".",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "person",
+                "company"
+              ]
+            }
+          },
+          {
+            "name": "company",
+            "in": "query",
+            "description": "Only the people of this company, by its id or exact name, e.g. \"Kunde A GmbH\".",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Contacts per call, 1 to 100. E.g. 50.",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The nextCursor of the previous call, with the same filters; leave out for the first call.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/ContactFormat"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The contacts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "description": "An argument is invalid (`invalid_argument`) or the company is unknown (`unknown_company`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:read"
+            ]
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Create or change a contact",
+        "description": "Without `id` creates a contact (`kind` required, answer 201); with `id` changes it: only the given fields change, lists replace the old list (answer 200). The contact's addresses link their mail to it; an address of another contact is refused. MCP equivalent: `save_contact`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#post-contacts"
+        },
+        "operationId": "saveContact",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactSave"
+              },
+              "example": {
+                "kind": "person",
+                "firstName": "Lena",
+                "lastName": "Bauer",
+                "company": "Kunde A GmbH",
+                "addresses": [
+                  "lena@kunde-a.at"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new contact.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Contact"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The changed contact.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Contact"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No contact with this id (`unknown_contact`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An argument is invalid: `invalid_argument`, `invalid_type`, `missing_name`, `address_linked`, `invalid_address`, `invalid_domain`, `free_mail_domain`, `domain_taken`, `domain_company_only`, `unknown_company`, `invalid_birthday` or `invalid_url`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/contacts/{id}": {
+      "get": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Read one contact",
+        "description": "One contact with its addresses (with mail counts), domains, phones, web and postal addresses; with `format=jcard` as a jCard array. MCP equivalent: `get_contact`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#get-contactsid"
+        },
+        "operationId": "getContact",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The contact id from list_contacts, e.g. \"42\".",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "42"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/ContactFormat"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The contact.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Contact"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No contact with this id (`unknown_contact`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:read"
+            ]
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Change a contact",
+        "description": "Changes the contact: only the given fields change, lists replace the old list. The same as POST /contacts with `id`. MCP: `save_contact` with `id`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#put-contactsid"
+        },
+        "operationId": "updateContact",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The contact id from list_contacts, e.g. \"42\".",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "42"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactSave"
+              },
+              "example": {
+                "jobTitle": "Einkauf"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The changed contact.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Contact"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No contact with this id (`unknown_contact`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An argument is invalid: `invalid_argument`, `invalid_type`, `missing_name`, `address_linked`, `invalid_address`, `invalid_domain`, `free_mail_domain`, `domain_taken`, `domain_company_only`, `unknown_company`, `invalid_birthday` or `invalid_url`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:write"
+            ]
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Delete a contact",
+        "description": "Deletes the contact; its addresses stay in the pool without a contact, the people of a company keep living without one. MCP equivalent: `delete_contact`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#delete-contactsid"
+        },
+        "operationId": "deleteContact",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The contact id from list_contacts, e.g. \"42\".",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "42"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No contact with this id (`unknown_contact`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/contacts/{id}/avatar": {
+      "put": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Set a contact's picture",
+        "description": "Sets the picture, replacing the old one. Send exactly one of `image` (base64) or `url` (the server downloads it from an http or https address), or upload a file as multipart field `avatar`. The picture is cropped to a centered square and scaled down to 128 x 128 if it is larger; smaller pictures keep their size. JPEG, PNG, WebP or GIF up to 2 MB. MCP equivalent: `set_contact_avatar`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#put-contactsidavatar"
+        },
+        "operationId": "setContactAvatar",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The contact id from list_contacts, e.g. \"42\".",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "42"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactAvatarSet"
+              },
+              "example": {
+                "url": "https://example.com/lena.jpg"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The contact with `avatarSize`, the size of the stored picture.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactWithAvatarSize"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No contact with this id (`unknown_contact`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The picture is wrong: `invalid_avatar_source`, `invalid_image`, `invalid_url` or `fetch_failed` (the message names the reason).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "More than 30 downloads per minute (`too_many_downloads`) or the general rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:write"
+            ]
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Remove a contact's picture",
+        "description": "Removes the picture; a contact without one is fine. MCP equivalent: `delete_contact_avatar`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#delete-contactsidavatar"
+        },
+        "operationId": "deleteContactAvatar",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The contact id from list_contacts, e.g. \"42\".",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "42"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The contact, with `hasAvatar` false.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Contact"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No contact with this id (`unknown_contact`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/contacts.vcf": {
+      "get": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Export contacts as vCard",
+        "description": "A vCard 4.0 file of at most 200 contacts: the given ids, or all matching `q`. For jCard use GET /contacts with `format=jcard`. MCP equivalent: `export_contacts`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#get-contactsvcf"
+        },
+        "operationId": "exportContacts",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "ids",
+            "in": "query",
+            "description": "Contact ids, comma separated, at most 200, e.g. \"42,43\". Left out: all contacts (at most 200; narrow with q).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Search in name, company, domains, email addresses and phone numbers, e.g. \"kunde a\".",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The vCard file.",
+            "content": {
+              "text/vcard": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "description": "More than 200 ids (`invalid_argument`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/contacts/import": {
+      "post": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Import vCard",
+        "description": "Imports vCard 3.0 or 4.0 text: same UID or address updates, otherwise creates. `dryRun` (default true) only reports. MCP equivalent: `import_contacts`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#post-contactsimport"
+        },
+        "operationId": "importContacts",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "vcard"
+                ],
+                "properties": {
+                  "vcard": {
+                    "description": "vCard 3.0 or 4.0 text with one or more cards (BEGIN:VCARD ... END:VCARD), at most 5 MB and 2000 cards.",
+                    "type": "string",
+                    "maxLength": 5242880
+                  },
+                  "dryRun": {
+                    "description": "true (the default): only report what would happen; false: import. Run a dry run first.",
+                    "type": "boolean",
+                    "default": true
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The report.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReport"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "description": "Not a vCard (`invalid_vcard`), more than 2000 cards (`too_many_cards`), more than 5 MB (`file_too_large`) or `missing_argument`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/addresses": {
+      "get": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "List the address pool",
+        "description": "Every address that appeared in the user's mail (own addresses left out), with its contact, mail counts and best pending suggestion. MCP equivalent: `list_addresses`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#get-addresses"
+        },
+        "operationId": "listAddresses",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "linked",
+            "in": "query",
+            "description": "true: only addresses linked to a contact, false: only addresses without one. Left out: all.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Search in name, company, domains, email addresses and phone numbers, e.g. \"kunde a\".",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "domain",
+            "in": "query",
+            "description": "Only addresses on this domain or its subdomains, e.g. \"kunde-a.at\".",
+            "schema": {
+              "type": "string",
+              "maxLength": 253
+            }
+          },
+          {
+            "name": "minInteractions",
+            "in": "query",
+            "description": "Only addresses with at least this many received plus sent mails, e.g. 2.",
+            "schema": {
+              "type": "integer",
+              "maximum": 1000000,
+              "minimum": 0
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "\"recent\" (the default: newest first) or \"interactions\" (most received plus sent mails first).",
+            "schema": {
+              "type": "string",
+              "default": "recent",
+              "enum": [
+                "recent",
+                "interactions"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Addresses per call, 1 to 100. E.g. 50.",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The nextCursor of the previous call, with the same filters; leave out for the first call.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The addresses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "addresses": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PoolAddress"
+                      }
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "description": "An argument is invalid (`invalid_argument`, `invalid_domain`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/addresses/{address}": {
+      "put": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Link, label or ignore an address",
+        "description": "Links the address to a contact (`contactId`) or unlinks it (`contactId: null`), sets its label, and marks it ignored (\"never suggest\"). MCP equivalents: `link_address` and `ignore_address`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#put-addressesaddress"
+        },
+        "operationId": "updateAddress",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "address",
+            "in": "path",
+            "description": "An email address, e.g. \"lena@kunde-a.at\".",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "contactId": {
+                    "description": "The contact to link the address to, by id; null unlinks it.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "label": {
+                    "description": "A label for the address, e.g. \"Arbeit\"; null removes it.",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 64
+                  },
+                  "ignored": {
+                    "description": "true: never suggest a contact for this address; false: suggest again.",
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              },
+              "example": {
+                "contactId": "42",
+                "label": "Privat"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolAddress"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No contact with this id (`unknown_contact`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The address belongs to another contact (`address_linked`), is not an address (`invalid_address`), or nothing to change (`missing_argument`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/suggestions": {
+      "get": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "List contact suggestions",
+        "description": "Suggestions for addresses without a contact, newest first: from the rules and from services and assistants. MCP equivalent: `list_suggestions`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#get-suggestions"
+        },
+        "operationId": "listSuggestions",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "\"pending\" (the default), \"accepted\" or \"rejected\".",
+            "schema": {
+              "type": "string",
+              "default": "pending",
+              "enum": [
+                "pending",
+                "accepted",
+                "rejected"
+              ]
+            }
+          },
+          {
+            "name": "minScore",
+            "in": "query",
+            "description": "Only suggestions with at least this score, 0 to 100, e.g. 60.",
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 0
+            }
+          },
+          {
+            "name": "domain",
+            "in": "query",
+            "description": "Only addresses on this domain or its subdomains, e.g. \"kunde-a.at\".",
+            "schema": {
+              "type": "string",
+              "maxLength": 253
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Suggestions per call, 1 to 100. E.g. 50.",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The nextCursor of the previous call, with the same filters; leave out for the first call.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The suggestions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "suggestions": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Suggestion"
+                      }
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "description": "An argument is invalid (`invalid_argument`, `invalid_domain`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:read"
+            ]
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Propose a contact for an address",
+        "description": "A service or assistant proposes to add an address without a contact to a contact (`contactId`) or to create one (`proposed`). Stored pending and shown to the user; never links by itself. MCP equivalent: `propose_suggestion`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#post-suggestions"
+        },
+        "operationId": "proposeSuggestion",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "address"
+                ],
+                "properties": {
+                  "address": {
+                    "description": "The email address without a contact that the proposal is for, e.g. \"rechnung@stadtwerke.at\".",
+                    "type": "string",
+                    "maxLength": 255
+                  },
+                  "contactId": {
+                    "description": "Propose to add the address to this existing contact, by id. Give this or proposed.",
+                    "type": "string"
+                  },
+                  "proposed": {
+                    "description": "Propose a new contact: {\"type\": \"person\" or \"company\", \"name\", \"firstName\", \"lastName\", \"companyId\" or \"companyName\", \"mainDomain\"}. Give this or contactId.",
+                    "type": "object"
+                  },
+                  "note": {
+                    "description": "Why, shown to the user, e.g. \"Schreibt regelmäßig wegen Rechnungen\".",
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "confidence": {
+                    "description": "How sure you are, 0 to 100 (default 50); shown as the score.",
+                    "type": "integer",
+                    "default": 50,
+                    "maximum": 100,
+                    "minimum": 0
+                  },
+                  "source": {
+                    "description": "Who proposes, shown to the user, e.g. \"Claude\"; default the name of the client.",
+                    "type": "string",
+                    "maxLength": 64
+                  }
+                },
+                "type": "object"
+              },
+              "example": {
+                "address": "rechnung@stadtwerke.at",
+                "proposed": {
+                  "type": "company",
+                  "name": "Stadtwerke"
+                },
+                "note": "Schreibt wegen Rechnungen",
+                "confidence": 70
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The suggestion (new or updated).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Suggestion"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No contact with this id (`unknown_contact`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The user already rejected this proposal (`suggestion_decided`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Give exactly one of contactId and proposed (`invalid_proposal`); the address has a contact (`address_linked`) or is invalid (`invalid_address`); `invalid_type`, `missing_name` or `unknown_company` in proposed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/suggestions/{id}/decision": {
+      "post": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Accept or reject a suggestion",
+        "description": "accept links the address (join) or creates the proposed contact with it (new; `overrides` change its fields); reject keeps it as rejected. MCP equivalent: `decide_suggestion`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/contacts.md#post-suggestionsiddecision"
+        },
+        "operationId": "decideSuggestion",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The suggestion id from list_suggestions or list_addresses, e.g. \"17\".",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "action"
+                ],
+                "properties": {
+                  "action": {
+                    "description": "\"accept\" (link the address, or create the proposed contact with it) or \"reject\" (never offered again).",
+                    "type": "string",
+                    "enum": [
+                      "accept",
+                      "reject"
+                    ]
+                  },
+                  "overrides": {
+                    "description": "With accept of a proposed new contact: fields to use instead of the proposal (the fields of save_contact), e.g. {\"name\": \"Paul A. Wagner\"}.",
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              },
+              "example": {
+                "action": "accept"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The address and the contact (null after reject).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "address": {
+                      "$ref": "#/components/schemas/PoolAddress"
+                    },
+                    "contact": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/Contact"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No suggestion with this id (`unknown_suggestion`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already decided (`suggestion_decided`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The address got a contact meanwhile (`address_linked`), or the overrides are invalid (`missing_name`, `free_mail_domain`, `domain_taken`, `unknown_company`, ...).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "contacts:write"
             ]
           }
         ]
@@ -757,6 +2236,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -812,7 +2294,7 @@
           "Mails"
         ],
         "summary": "List mails",
-        "description": "Lists mails, newest first, in pages. Page with `nextCursor` until it is `null`. `since` and `until` take an ISO 8601 time or a duration such as `4d`. MCP equivalent: `list_mails` (`q` is `query` and `limit` is `batchSize` there).",
+        "description": "Lists mails, newest first, in pages. Page with `nextCursor` until it is `null`. With `includeContent=1` every mail carries the full content of `get_mail` (body, recipients, images, attachment text), at most 100 per page; such a page can end early (`partial: true`). `since` and `until` take an ISO 8601 time or a duration such as `4d`. MCP equivalent: `list_mails` (`q` is `query` and `limit` is `batchSize` there).",
         "externalDocs": {
           "description": "Documentation",
           "url": "/help/api/mails.md#get-mails"
@@ -920,13 +2402,21 @@
             }
           },
           {
+            "name": "contact",
+            "in": "query",
+            "description": "Only mails linked to this contact (at any position), by its id from list_contacts, e.g. \"42\"; \"none\" for mails without a contact.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
-            "description": "Mails per call, 1 to 200. E.g. 50.",
+            "description": "Mails per call, 1 to 500 (1 to 100 with includeContent). E.g. 50.",
             "schema": {
               "type": "integer",
               "default": 50,
-              "maximum": 200,
+              "maximum": 500,
               "minimum": 1
             }
           },
@@ -936,6 +2426,55 @@
             "description": "The nextCursor of the previous call, with the same filters; leave out for the first call.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "includeContent",
+            "in": "query",
+            "description": "Add the full content of get_mail to every mail: to, cc, messageId, bodyCleanMarkdown, bodyCleanVersion, bodyTruncated, images and attachments with their converted text (bodyMarkdown with includeFullMarkdown), so no get_mail call per mail is needed. Takes maxBodyChars, maxAttachmentChars, includeAttachmentText and includeFullMarkdown per mail, at most 100 mails per call. A page can end early (partial: true) when bodies had to be read from the mail server; continue with nextCursor. E.g. true.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "maxBodyChars",
+            "in": "query",
+            "description": "Cut the body after about this many characters, e.g. 5000.",
+            "schema": {
+              "type": "integer",
+              "default": 20000,
+              "maximum": 100000,
+              "minimum": 1000
+            }
+          },
+          {
+            "name": "maxAttachmentChars",
+            "in": "query",
+            "description": "Total budget for attachment text, shared across all attachments, e.g. 20000.",
+            "schema": {
+              "type": "integer",
+              "default": 20000,
+              "maximum": 100000,
+              "minimum": 1000
+            }
+          },
+          {
+            "name": "includeAttachmentText",
+            "in": "query",
+            "description": "false leaves out the converted attachment text. E.g. false.",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "name": "includeFullMarkdown",
+            "in": "query",
+            "description": "Add bodyMarkdown, the body as the sender sent it with links, image references, signature and quoted reply, for showing the mail to a person. Leave it out for AI processing: bodyCleanMarkdown, always included, is the better and much smaller input. E.g. true.",
+            "schema": {
+              "type": "boolean",
+              "default": false
             }
           }
         ],
@@ -961,6 +2500,9 @@
                       "archived": false,
                       "account": "Privat",
                       "folder": "Posteingang",
+                      "folders": [
+                        "Posteingang"
+                      ],
                       "categories": [],
                       "hasAttachments": true,
                       "fromMe": false,
@@ -978,11 +2520,14 @@
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
           "422": {
-            "description": "A filter is invalid: `invalid_argument`, `invalid_time_filter` (with the accepted forms and a corrected call), `invalid_cursor`, `unknown_category`, `unknown_account`, `unknown_folder` or `ambiguous_name`.",
+            "description": "A filter is invalid (also a content option without `includeContent`, or more than 100 mails with it): `invalid_argument`, `invalid_time_filter` (with the accepted forms and a corrected call), `invalid_cursor`, `unknown_category`, `unknown_account`, `unknown_folder` or `ambiguous_name`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1105,6 +2650,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -1197,6 +2745,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -1280,6 +2831,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -1295,6 +2849,120 @@
           },
           "422": {
             "description": "An argument is invalid: `invalid_argument` (also a bad `categorizedBy`), `missing_argument`, `unknown_category` or `ambiguous_name`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "mails:categorize"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/mails/categorize": {
+      "post": {
+        "tags": [
+          "Mails"
+        ],
+        "summary": "Set the categories of many mails",
+        "description": "Sets the categories of up to 100 mails in one request, each exactly like `PUT /mails/{key}/categories` (full set, children trump parents, `categorizedBy`, auto-move). The items are independent: one that fails does not stop the others, and its result carries the error code of the single call; retry only the failed keys. The request counts once against the rate limit. REST only: MCP has `categorize_mail` per mail.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/mails.md#post-mailscategorize"
+        },
+        "operationId": "batchCategorizeMails",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchCategorizeRequest"
+              },
+              "example": {
+                "categorizedBy": "my-script",
+                "items": [
+                  {
+                    "key": "Zk3o1v9mQfV2uTn8aYb4Ew",
+                    "categories": [
+                      "Rechnungen/Strom"
+                    ]
+                  },
+                  {
+                    "key": "Qm7p2w0nRgW3vUo9bZc5Fx",
+                    "categories": [
+                      "Gibt es nicht"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One result per item, also when some failed: a failed item has `ok: false` and the code of the single call in `error.code` (`unknown_key`, `unknown_category`, `ambiguous_name`, `invalid_argument`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchCategorized"
+                },
+                "example": {
+                  "results": [
+                    {
+                      "key": "Zk3o1v9mQfV2uTn8aYb4Ew",
+                      "ok": true,
+                      "categories": [
+                        "Rechnungen/Strom"
+                      ],
+                      "categorizedBy": "my-script",
+                      "droppedCategories": [],
+                      "changed": true
+                    },
+                    {
+                      "key": "Qm7p2w0nRgW3vUo9bZc5Fx",
+                      "ok": false,
+                      "error": {
+                        "code": "unknown_category",
+                        "message": "Kategorie \"Gibt es nicht\" nicht gefunden."
+                      }
+                    }
+                  ],
+                  "succeeded": 1,
+                  "failed": 1
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "description": "The request as a whole is invalid and nothing was changed: `invalid_argument` (more than 100 items, a key twice, a bad top-level `categorizedBy`) or `missing_argument` (no `items`, an item without `key` or `categories`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1355,6 +3023,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -1375,6 +3046,620 @@
   },
   "components": {
     "schemas": {
+      "Contact": {
+        "description": "A person or a company (design-docs/contacts.md). With format=jcard a jCard array instead.",
+        "properties": {
+          "id": {
+            "description": "The contact shapes of the service API (design-docs/contacts.md); on their own class, see Schemas.",
+            "type": "string",
+            "example": "42"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "person",
+              "company"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "example": "Lena Bauer"
+          },
+          "firstName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "middleNames": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "namePrefix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nameSuffix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nickname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "company": {
+            "description": "A person's company {id, name}.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "jobTitle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "birthday": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "1990-04-01"
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "domains": {
+            "description": "The main domain first.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "linkAllDomainAddresses": {
+            "type": "boolean"
+          },
+          "addresses": {
+            "type": "array",
+            "items": {
+              "properties": {
+                "address": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "receivedCount": {
+                  "type": "integer"
+                },
+                "sentCount": {
+                  "type": "integer"
+                },
+                "lastSeenAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "phones": {
+            "type": "array",
+            "items": {
+              "properties": {
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "number": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "urls": {
+            "type": "array",
+            "items": {
+              "properties": {
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "postalAddresses": {
+            "type": "array",
+            "items": {
+              "properties": {
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "street": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "postalCode": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "city": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "region": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "country": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          },
+          "hasAvatar": {
+            "type": "boolean"
+          },
+          "createdBy": {
+            "description": "user, import, suggestion or the name of the client that created it.",
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "type": "object"
+      },
+      "ContactSave": {
+        "properties": {
+          "id": {
+            "description": "Leave out to create a contact; the id of an existing contact to change it (only the fields you give change).",
+            "type": "string"
+          },
+          "kind": {
+            "description": "\"person\" or \"company\"; required when creating.",
+            "type": "string",
+            "enum": [
+              "person",
+              "company"
+            ]
+          },
+          "name": {
+            "description": "Display name, e.g. \"Lena Bauer\" or \"Kunde A GmbH\". A person without it gets one built from the name parts.",
+            "type": "string",
+            "maxLength": 255
+          },
+          "firstName": {
+            "description": "Given name of a person, e.g. \"Lena\".",
+            "type": "string",
+            "maxLength": 255
+          },
+          "lastName": {
+            "description": "Family name of a person, e.g. \"Bauer\".",
+            "type": "string",
+            "maxLength": 255
+          },
+          "middleNames": {
+            "description": "Middle names of a person, e.g. \"Maria\".",
+            "type": "string",
+            "maxLength": 255
+          },
+          "namePrefix": {
+            "description": "Title or prefix, e.g. \"Dr.\".",
+            "type": "string",
+            "maxLength": 64
+          },
+          "nameSuffix": {
+            "description": "Suffix, e.g. \"MSc\".",
+            "type": "string",
+            "maxLength": 64
+          },
+          "nickname": {
+            "description": "Nickname, e.g. \"Leni\".",
+            "type": "string",
+            "maxLength": 255
+          },
+          "company": {
+            "description": "A person's company: a company contact by id or exact name; an unknown name creates the company. null removes it.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 255
+          },
+          "jobTitle": {
+            "description": "Job title of a person, e.g. \"Einkauf\".",
+            "type": "string",
+            "maxLength": 255
+          },
+          "birthday": {
+            "description": "Birthday as YYYY-MM-DD, e.g. \"1990-04-01\"; null removes it.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 10
+          },
+          "notes": {
+            "description": "Free notes, e.g. \"Steuerberater, Jahresabschluss bis Ende Juni\".",
+            "type": "string",
+            "maxLength": 20000
+          },
+          "addresses": {
+            "description": "The contact's email addresses, replacing the list, e.g. [\"lena@kunde-a.at\"]. An address that belongs to another contact is refused (address_linked).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "domains": {
+            "description": "A company's domains, the main domain first, replacing the list, e.g. [\"kunde-a.at\"]. Free-mail domains such as gmail.com are refused; a person has no domains (domain_company_only).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "linkAllDomainAddresses": {
+            "description": "true (the default for a new contact): every address on the domains and their subdomains links its mail to this contact.",
+            "type": "boolean"
+          },
+          "phones": {
+            "description": "Phone numbers, replacing the list, e.g. [{\"label\": \"Mobil\", \"number\": \"+43 664 1234567\"}].",
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "urls": {
+            "description": "Web addresses, replacing the list, e.g. [{\"label\": \"Blog\", \"url\": \"https://example.com\"}].",
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "postalAddresses": {
+            "description": "Postal addresses, replacing the list, e.g. [{\"label\": \"Büro\", \"street\": \"Ring 1\", \"postalCode\": \"1010\", \"city\": \"Wien\", \"region\": null, \"country\": \"AT\"}].",
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "type": "object"
+      },
+      "ContactList": {
+        "properties": {
+          "contacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Contact"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Suggestion": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "join",
+              "new"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "same_name",
+              "same_domain",
+              "same_domain_name",
+              "same_local_part",
+              "person_for_company",
+              "new_contact",
+              "proposed"
+            ]
+          },
+          "score": {
+            "type": "integer"
+          },
+          "source": {
+            "description": "\"rules\" or the name of the service or assistant.",
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contactId": {
+            "description": "kind join: the contact to add the address to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposed": {
+            "description": "kind new: the contact to create {type, name, firstName, lastName, companyId, companyName, mainDomain}.",
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "firstName": {
+                "type": "string"
+              },
+              "lastName": {
+                "type": "string"
+              },
+              "companyId": {
+                "type": "string"
+              },
+              "companyName": {
+                "type": "string"
+              },
+              "mainDomain": {
+                "type": "string"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "accepted",
+              "rejected"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "type": "object"
+      },
+      "PoolAddress": {
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "name": {
+            "description": "The name last seen with the address.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receivedCount": {
+            "type": "integer"
+          },
+          "sentCount": {
+            "type": "integer"
+          },
+          "copiedCount": {
+            "type": "integer"
+          },
+          "firstSeenAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "lastSeenAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "ignored": {
+            "type": "boolean"
+          },
+          "suggestion": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Suggestion",
+                "description": "The best pending suggestion."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The best pending suggestion."
+          }
+        },
+        "type": "object"
+      },
+      "ImportReport": {
+        "properties": {
+          "dryRun": {
+            "type": "boolean"
+          },
+          "created": {
+            "type": "integer"
+          },
+          "updated": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "created",
+                    "updated",
+                    "skipped"
+                  ]
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "contactId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          }
+        },
+        "type": "object"
+      },
+      "ContactAvatarSet": {
+        "description": "Exactly one of `image` and `url` (or a multipart file field `avatar`).",
+        "properties": {
+          "image": {
+            "description": "The picture as base64 (plain or as a data:image/...;base64, URI): JPEG, PNG, WebP or GIF, at most 2 MB. Give image or url, not both. For big files prefer url.",
+            "type": "string"
+          },
+          "url": {
+            "description": "An http:// or https:// address the server downloads the picture from (once; the address is not stored), at most 2 MB, e.g. \"https://example.com/lena.jpg\". Give url or image, not both.",
+            "type": "string",
+            "maxLength": 2048
+          },
+          "avatar": {
+            "description": "Instead of image and url: the picture as a file in a multipart/form-data request.",
+            "type": "string",
+            "format": "binary"
+          }
+        },
+        "type": "object"
+      },
+      "ContactWithAvatarSize": {
+        "description": "A contact as in Contact, plus the size of the stored picture.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Contact"
+          },
+          {
+            "properties": {
+              "avatarSize": {
+                "properties": {
+                  "width": {
+                    "type": "integer",
+                    "example": 128
+                  },
+                  "height": {
+                    "type": "integer",
+                    "example": 128
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "type": "object"
+          }
+        ]
+      },
       "Error": {
         "description": "Every error answer of the service API. `error.code` is stable and machine-readable and is the same as in the MCP server; `error.message` says what is wrong; `error.allowed` lists accepted values and `error.example` is a corrected call, where one helps. A 422 answer from validation also carries Laravel's `errors` per field.",
         "required": [
@@ -1414,6 +3699,15 @@
               "status": {
                 "description": "Why a source or image is unavailable (source_unavailable, image_unavailable).",
                 "type": "string"
+              },
+              "detail": {
+                "description": "For a mail server failure (`imap_auth_failed`, `imap_unreachable`): what the server answered, for example `NO [AUTHENTICATIONFAILED] Invalid credentials`.",
+                "type": "string"
+              },
+              "ref": {
+                "description": "Reference of an unexpected error (`server_error`) or a failed mail server connection: 8 characters that name the entry in the server log. Give it to the operator.",
+                "type": "string",
+                "example": "7K3F9Q2A"
               }
             },
             "type": "object"
@@ -1466,6 +3760,7 @@
           "archived",
           "account",
           "folder",
+          "folders",
           "categories",
           "hasAttachments",
           "fromMe",
@@ -1518,6 +3813,17 @@
             "type": "string",
             "example": "Posteingang"
           },
+          "folders": {
+            "description": "Every folder the mail is in, folder first; more than one only for Gmail, whose labels are folders.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "Posteingang",
+              "Newsletter"
+            ]
+          },
           "categories": {
             "description": "Categories by full path; all are equal, there is no main category.",
             "type": "array",
@@ -1545,6 +3851,28 @@
           "threadId": {
             "description": "Present when the mail belongs to a conversation of more than one mail.",
             "type": "string"
+          },
+          "contacts": {
+            "description": "Only with the scope contacts:read: the linked contacts, the main contact first (design-docs/contacts.md).",
+            "type": "array",
+            "items": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "person",
+                    "company"
+                  ]
+                }
+              },
+              "type": "object"
+            }
           }
         },
         "type": "object"
@@ -1827,6 +4155,125 @@
           }
         ]
       },
+      "AttachmentWithText": {
+        "description": "Attachment metadata with its converted text, as get_mail returns it.",
+        "required": [
+          "id",
+          "filename",
+          "mimeType",
+          "size",
+          "inline",
+          "conversionStatus"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "12"
+          },
+          "filename": {
+            "type": "string",
+            "example": "Rechnung.pdf"
+          },
+          "mimeType": {
+            "type": "string",
+            "example": "application/pdf"
+          },
+          "size": {
+            "type": "integer",
+            "example": 48211
+          },
+          "inline": {
+            "type": "boolean"
+          },
+          "conversionStatus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "converted"
+          },
+          "markdown": {
+            "description": "The converted text, when there is one and includeAttachmentText is not false; cut to maxAttachmentChars shared across the mail's attachments.",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "With markdown: the text was cut.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "MailWithContent": {
+        "description": "A mail of the list with includeContent: the Mail fields plus the content of get_mail.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Mail"
+          },
+          {
+            "required": [
+              "to",
+              "cc",
+              "messageId",
+              "bodyCleanMarkdown",
+              "bodyCleanVersion",
+              "bodyTruncated",
+              "images",
+              "attachments"
+            ],
+            "properties": {
+              "to": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Address"
+                }
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Address"
+                }
+              },
+              "messageId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "bodyCleanMarkdown": {
+                "description": "The body as text reduced to what is readable: no images, link targets, signatures, quoted replies, footers or invisible characters. Use it for sorting and search; use bodyMarkdown to read the mail as sent.",
+                "type": "string",
+                "readOnly": true
+              },
+              "bodyCleanVersion": {
+                "description": "Version of the rules that produced bodyCleanMarkdown; it changes when the rules change. 0 means a fallback: the original message is not available, so the plain text part was cleaned instead.",
+                "type": "integer",
+                "readOnly": true
+              },
+              "bodyTruncated": {
+                "description": "The body was cut at maxBodyChars.",
+                "type": "boolean"
+              },
+              "bodyMarkdown": {
+                "description": "Only with includeFullMarkdown: the body as the sender sent it, cut at maxBodyChars.",
+                "type": "string"
+              },
+              "images": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Image"
+                }
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AttachmentWithText"
+                }
+              }
+            },
+            "type": "object"
+          }
+        ]
+      },
       "MailPage": {
         "required": [
           "data",
@@ -1836,9 +4283,17 @@
         ],
         "properties": {
           "data": {
+            "description": "Mail items; with includeContent MailWithContent items.",
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Mail"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Mail"
+                },
+                {
+                  "$ref": "#/components/schemas/MailWithContent"
+                }
+              ]
             }
           },
           "nextCursor": {
@@ -1853,6 +4308,10 @@
               "string",
               "null"
             ]
+          },
+          "partial": {
+            "description": "Only with includeContent: true when the page ended early because reading bodies from the mail server took too long; it has fewer mails than asked for, and nextCursor continues right after the last one.",
+            "type": "boolean"
           },
           "canLoadOlder": {
             "description": "Whether the mail server may hold older mail that is not imported yet; the API cannot start an import.",
@@ -1988,6 +4447,143 @@
             "type": "object"
           }
         ]
+      },
+      "BatchCategorizeRequest": {
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "categorizedBy": {
+            "description": "Default for items without their own categorizedBy. Who decided, remembered on the mail, e.g. \"llm\" or \"heuristic\". Lowercase letters, digits and _ . : -, max 32. \"user\" and \"system\" are reserved.",
+            "type": "string",
+            "example": "my-script",
+            "default": "api"
+          },
+          "items": {
+            "description": "One entry per mail, each key at most once.",
+            "type": "array",
+            "items": {
+              "required": [
+                "key",
+                "categories"
+              ],
+              "properties": {
+                "key": {
+                  "description": "The mail key from list_mails (22 characters, permanent).",
+                  "type": "string",
+                  "example": "Zk3o1v9mQfV2uTn8aYb4Ew"
+                },
+                "categories": {
+                  "description": "The mail's categories by full path, e.g. [\"Rechnungen/Strom\"]; [] for none.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "example": [
+                    "Rechnungen/Strom"
+                  ]
+                },
+                "categorizedBy": {
+                  "description": "Overrides the top-level categorizedBy for this mail.",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "maxItems": 100,
+            "minItems": 1
+          }
+        },
+        "type": "object"
+      },
+      "BatchCategorized": {
+        "required": [
+          "results",
+          "succeeded",
+          "failed"
+        ],
+        "properties": {
+          "results": {
+            "description": "One result per item, in request order.",
+            "type": "array",
+            "items": {
+              "required": [
+                "key",
+                "ok"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "categories": {
+                  "description": "With ok: the categories the mail has now.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "categorizedBy": {
+                  "description": "With ok: who decided, as stored on the mail.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "droppedCategories": {
+                  "description": "With ok: categories left out because a subcategory of them was passed too.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "changed": {
+                  "description": "With ok: false when the mail already had these categories.",
+                  "type": "boolean"
+                },
+                "movedTo": {
+                  "description": "As on PUT categories.",
+                  "type": "string"
+                },
+                "moveConflict": {
+                  "description": "As on PUT categories.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "error": {
+                  "description": "Without ok: why this mail was not changed.",
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "properties": {
+                    "code": {
+                      "description": "`unknown_key`, `unknown_category`, `ambiguous_name` or `invalid_argument`, as on PUT categories.",
+                      "type": "string",
+                      "example": "unknown_category"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "succeeded": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
       },
       "Category": {
         "required": [
@@ -2220,11 +4816,33 @@
           }
         }
       },
+      "ServerError": {
+        "description": "An unexpected error on the server (`server_error`); `error.ref` and the X-Request-Id header name its log entry.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
       "RateLimited": {
         "description": "Too many requests (`rate_limited`); wait the number of seconds in the Retry-After header.",
         "headers": {
           "Retry-After": {
             "description": "Seconds to wait.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          "X-RateLimit-Limit": {
+            "description": "Requests per minute allowed for this credential; also sent on every other answer.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          "X-RateLimit-Remaining": {
+            "description": "Requests left in the current minute (0 here); also sent on every other answer.",
             "schema": {
               "type": "integer"
             }
@@ -2259,6 +4877,19 @@
           "type": "string",
           "example": "Zk3o1v9mQfV2uTn8aYb4Ew"
         }
+      },
+      "ContactFormat": {
+        "name": "format",
+        "in": "query",
+        "description": "\"json\" (default): the contact as an object; \"jcard\": as a jCard array (RFC 7095, vCard 4.0 as JSON).",
+        "schema": {
+          "type": "string",
+          "default": "json",
+          "enum": [
+            "json",
+            "jcard"
+          ]
+        }
       }
     },
     "securitySchemes": {
@@ -2278,7 +4909,9 @@
               "mails:categorize": "Set the categories of a mail",
               "categories:read": "List categories",
               "categories:write": "Create and change categories",
-              "drafts:write": "Create drafts (never sends mail)"
+              "drafts:write": "Create drafts (never sends mail)",
+              "contacts:read": "List and read contacts, the address pool and suggestions; contacts on mails",
+              "contacts:write": "Create, change and delete contacts, link addresses, decide and propose suggestions, import"
             }
           }
         }
@@ -2305,6 +4938,10 @@
     {
       "name": "Drafts",
       "description": "Drafts for the user to review and send."
+    },
+    {
+      "name": "Contacts",
+      "description": "People and companies, the address pool, suggestions, vCard."
     },
     {
       "name": "Authentication",

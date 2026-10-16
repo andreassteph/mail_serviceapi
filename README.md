@@ -6,7 +6,7 @@ method per operation, one read-only dataclass per response schema.
 ```python
 from mail_serviceapi import MailClient
 
-with MailClient("https://ttt.stephanides.at", token) as client:
+with MailClient("https://mail.stephanides.at", token) as client:
     print(client.list_users())
 ```
 

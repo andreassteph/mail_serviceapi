@@ -8,6 +8,8 @@ Differences from the raw API:
 - `list_mails` and `list_mail_changes` hide the cursor paging: they yield one
   item at a time and fetch the next page only when the current one is used up;
 - `user` (the `{user}` in every path) defaults to the client's user;
+- `ClientCredentials` as the token handles requestToken (/oauth/token): it
+  fetches a service client's access token and renews it before it expires;
 - a non-2xx answer raises `MailClientError`; a 429 is retried after
   `Retry-After` seconds, up to `max_retries` times;
 - a dropped connection (e.g. a stale keep-alive one) is retried up to
@@ -26,16 +28,18 @@ import httpx
 from mail_serviceapi.models import (
     Attachment,
     AttachmentText,
+    BatchCategorized,
     Categorized,
     Category,
     Change,
     Draft,
     Mail,
     MailDetail,
+    MailWithContent,
     User,
 )
 
-__all__ = ["MailClient", "MailClientError"]
+__all__ = ["ClientCredentials", "MailClient", "MailClientError"]
 
 UNSET: Any = object()  # "leave unchanged", distinct from None ("set to null")
 
@@ -64,6 +68,53 @@ class MailClientError(Exception):
         self.example = example
 
 
+class ClientCredentials(httpx.Auth):
+    """A service client's access tokens, fetched from /oauth/token with the
+    client credentials grant and fetched anew shortly before they expire (they
+    live 10 minutes) or when an answer is 401. Pass it as `token`; one instance
+    may be shared by several clients."""
+
+    requires_response_body = True
+    EARLY = 30  # seconds before expiry a token is replaced
+
+    def __init__(
+        self, url: str, client_id: str, client_secret: str, scope: str | None = None
+    ):
+        self.token_url = url.rstrip("/") + "/oauth/token"
+        self.form = _drop_none(
+            {
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": scope,
+            }
+        )
+        self.access_token: str | None = None
+        self.expires_at = 0.0  # time.monotonic()
+
+    def auth_flow(self, request: httpx.Request):
+        if self.access_token is None or time.monotonic() >= self.expires_at:
+            self._store((yield httpx.Request("POST", self.token_url, data=self.form)))
+        request.headers["Authorization"] = f"Bearer {self.access_token}"
+        response = yield request
+        if response.status_code == 401:  # revoked or expired early: once more
+            self._store((yield httpx.Request("POST", self.token_url, data=self.form)))
+            request.headers["Authorization"] = f"Bearer {self.access_token}"
+            yield request
+
+    def _store(self, response: httpx.Response) -> None:
+        if not response.is_success:
+            try:  # OAuth error body: error, error_description
+                body = response.json()
+                code, message = body.get("error"), body.get("error_description", "")
+            except ValueError:
+                code, message = None, response.text
+            raise MailClientError(response.status_code, message, code=code)
+        body = response.json()
+        self.access_token = body["access_token"]
+        self.expires_at = time.monotonic() + body["expires_in"] - self.EARLY
+
+
 def _drop_none(values: dict) -> dict:
     return {k: v for k, v in values.items() if v is not None}
 
@@ -84,14 +135,15 @@ class MailClient:
     def __init__(
         self,
         url: str,
-        token: str,
+        token: str | ClientCredentials,
         user: int | str | None = None,
         timeout: float = 30.0,
         max_retries: int = 3,
         transport: httpx.BaseTransport | None = None,
     ):
         """`url` is the service base URL (e.g. https://host), `token` a personal
-        token or a service client's access token.
+        token, a service client's access token or `ClientCredentials`, which
+        fetches and renews the access tokens itself.
 
         `user` is the default `{user}` for every call. Left out, the client uses
         the credential's only user (from `list_users`) and raises if it has
@@ -99,9 +151,13 @@ class MailClient:
         """
         self.user = user
         self.max_retries = max_retries
+        headers = {"Accept": "application/json"}
+        if isinstance(token, str):
+            headers["Authorization"] = f"Bearer {token}"
         self._http = httpx.Client(
             base_url=url.rstrip("/"),
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            headers=headers,
+            auth=None if isinstance(token, str) else token,
             timeout=timeout,
             transport=transport,
         )
@@ -241,16 +297,27 @@ class MailClient:
         since: str | datetime | None = None,
         until: str | datetime | None = None,
         q: str | None = None,
+        contact: str | None = None,
         limit: int | None = None,
+        include_content: bool | None = None,
+        max_body_chars: int | None = None,
+        max_attachment_chars: int | None = None,
+        include_attachment_text: bool | None = None,
+        include_full_markdown: bool | None = None,
         user: int | str | None = None,
-    ) -> Iterator[Mail]:
+    ) -> Iterator[Mail | MailWithContent]:
         """Every matching mail, newest first, one at a time.
 
         Pages are fetched lazily: the first when iteration starts, the next only
         when the current one is used up, so only one page is ever held and
         leaving the loop early stops further requests. `limit` is the page size
-        (1 to 200). `since`/`until` take a datetime, an ISO time or a duration
-        such as "4d".
+        (1 to 500; 1 to 100 with `include_content`). `since`/`until` take a
+        datetime, an ISO time or a duration such as "4d".
+
+        With `include_content=True` every item is a `MailWithContent`: the
+        content of `get_mail` comes with the list, so no `get_mail` per mail is
+        needed. `max_body_chars`, `max_attachment_chars`,
+        `include_attachment_text` and `include_full_markdown` only work with it.
         """
         params = {
             "view": view,
@@ -264,50 +331,25 @@ class MailClient:
             "since": _time(since),
             "until": _time(until),
             "q": q,
+            "contact": contact,
             "limit": limit,
+            "includeContent": _flag(include_content),
+            "maxBodyChars": max_body_chars,
+            "maxAttachmentChars": max_attachment_chars,
+            "includeAttachmentText": _flag(include_attachment_text),
+            "includeFullMarkdown": _flag(include_full_markdown),
         }
+        model = MailWithContent if include_content else Mail
         for mail in self._pages(f"{self._base(user)}/mails", params):
-            yield Mail.from_json(mail)
+            yield model.from_json(mail)
 
     def list_full_mails(
-        self,
-        *,
-        view: str | None = None,
-        category: str | None = None,
-        include_children: bool | None = None,
-        account: str | None = None,
-        folder: str | None = None,
-        unread: bool | None = None,
-        archived: bool | None = None,
-        categorized_by: str | None = None,
-        since: str | datetime | None = None,
-        until: str | datetime | None = None,
-        q: str | None = None,
-        limit: int | None = None,
-        user: int | str | None = None,
-    ) -> Iterator[MailDetail]:
-        """`list_mails`, but each mail in full via `get_mail`.
-
-        Not an API operation: one extra request per mail, made lazily as the
-        loop reaches it.
-        """
-        for mail in self.list_mails(
-            view=view,
-            category=category,
-            include_children=include_children,
-            account=account,
-            folder=folder,
-            unread=unread,
-            archived=archived,
-            categorized_by=categorized_by,
-            since=since,
-            until=until,
-            q=q,
-            limit=limit,
-            user=user,
-        ):
-            detail = self.get_mail(mail.key, user=user)
-            yield replace(detail, **vars(mail))
+        self, *, limit: int | None = None, **filters: Any
+    ) -> Iterator[MailWithContent]:
+        """`list_mails(include_content=True)`: each mail with its content, paged
+        in batches of `limit` (at most 100) instead of one request per mail.
+        Takes the same arguments as `list_mails`."""
+        return self.list_mails(include_content=True, limit=limit, **filters)
 
     def get_mail(
         self,
@@ -358,6 +400,38 @@ class MailClient:
             "PUT", f"{self._base(user)}/mails/{key}/categories", json=body
         )
         return Categorized.from_json(response.json())
+
+    def batch_categorize_mails(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        categorized_by: str | None = None,
+        user: int | str | None = None,
+    ) -> BatchCategorized:
+        """Set the categories of up to 100 mails in one request, each like
+        `categorize_mail`. An item is `{"key": ..., "categories": [...]}` and
+        may carry its own `"categorized_by"`. The items are independent: a
+        failed one has `ok=False` and an `error` in its result, the others are
+        still applied; retry only the failed keys."""
+        body = _drop_none(
+            {
+                "categorizedBy": categorized_by,
+                "items": [
+                    _drop_none(
+                        {
+                            "key": item["key"],
+                            "categories": item["categories"],
+                            "categorizedBy": item.get("categorized_by"),
+                        }
+                    )
+                    for item in items
+                ],
+            }
+        )
+        response = self._request(
+            "POST", f"{self._base(user)}/mails/categorize", json=body
+        )
+        return BatchCategorized.from_json(response.json())
 
     # -- drafts ----------------------------------------------------------------
 

@@ -10,7 +10,7 @@ Every operation in the [API reference](./service-api.md) is one method on
 ```python
 from mail_serviceapi import MailClient
 
-with MailClient("https://ttt.stephanides.at", token) as client:
+with MailClient("https://mail.stephanides.at", token) as client:
     print(client.list_users())
 ```
 
@@ -19,6 +19,11 @@ with MailClient("https://ttt.stephanides.at", token) as client:
   API-Tokens) or a service client's access token. The token's scopes limit what
   works: `mails:read`, `mails:categorize`, `categories:read`,
   `categories:write`, `drafts:write`.
+- For a service client, pass `ClientCredentials(url, client_id, client_secret,
+  scope=...)` as `token`. It fetches an access token from `/oauth/token` on the
+  first call and fetches a new one shortly before it expires (they live 10
+  minutes), or after a 401. One instance can be shared by several clients, e.g.
+  one per user.
 - `user` (optional) is the user whose mail every call uses. Leave it out when
   the token belongs to one user: the client looks that user up on the first
   call. Each method also takes `user=` to override it for one call.
@@ -41,7 +46,13 @@ for mail in client.list_mails(view="inbox", category="none", since="7d"):
 The filters are the API's: `view`, `category` (a full path, `"none"` or
 `"any"`), `include_children`, `account`, `folder`, `unread`, `archived`,
 `categorized_by`, `since` and `until` (a `datetime`, an ISO time or a duration
-such as `"4d"`), `q` (full-text search) and `limit` (the page size, 1 to 200).
+such as `"4d"`), `q` (full-text search), `contact` and `limit` (the page size, 1 to 500).
+
+With `include_content=True` every mail is a `MailWithContent`: the fields of
+`get_mail` (clean body, recipients, images, attachments with text) come with
+the list, so no `get_mail` per mail is needed. Pages hold at most 100 mails;
+`max_body_chars`, `max_attachment_chars`, `include_attachment_text` and
+`include_full_markdown` tune the content.
 
 `list_mail_changes(key)` works the same way for a mail's change log.
 
@@ -60,9 +71,7 @@ images, link targets, signatures, quoted replies or footers): use it for
 sorting and search. `body_clean_version` is the version of the rules that made
 it (0 = fallback from the plain text part).
 `get_mail(..., include_full_markdown=True)` adds `body_markdown`, the body as
-sent, for showing a mail to a person; it is `None` otherwise. `list_full_mails(...)` takes the same filters as `list_mails`
-and yields a `MailDetail` for each mail, calling `get_mail` once per mail as
-the loop reaches it. `get_attachment_text`, `download_attachment`,
+sent, for showing a mail to a person; it is `None` otherwise. `list_full_mails(...)` is `list_mails(include_content=True, ...)`. `get_attachment_text`, `download_attachment`,
 `download_mail_source` and `get_mail_image` fetch the rest. The `download_*`
 and `get_mail_image` methods return `bytes`.
 
@@ -77,6 +86,20 @@ This replaces the mail's categories (`[]` removes them all). Always pass
 `create_category` and `update_category` manage the category tree. In
 `update_category`, only the fields you pass change. `parent=None` makes a
 category a root, and `description=None` clears its description.
+
+To sort many mails at once, use `batch_categorize_mails` (up to 100 per
+request, one rate-limit hit):
+
+```python
+result = client.batch_categorize_mails(
+    [{"key": m.key, "categories": ["Rechnungen/Strom"]} for m in mails],
+    categorized_by="mailclient_sort",
+)
+failed = [r.key for r in result.results if not r.ok]  # r.error.code says why
+```
+
+The items are independent: a failed one does not stop the others, so retry only
+the failed keys. An item may carry its own `"categorized_by"`.
 
 `create_draft` saves a draft for you to review and never sends mail.
 

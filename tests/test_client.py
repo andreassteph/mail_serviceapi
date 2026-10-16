@@ -8,7 +8,13 @@ import pytest
 
 import mail_serviceapi
 from mail_serviceapi import MailClient, MailClientError
-from mail_serviceapi.models import Categorized, Mail, MailDetail
+from mail_serviceapi.models import (
+    BatchCategorized,
+    Categorized,
+    Mail,
+    MailDetail,
+    MailWithContent,
+)
 
 BASE = "/api/v1/service/users/3"
 
@@ -26,6 +32,7 @@ def fake_mail(key: str, **extra) -> dict:
         "archived": False,
         "account": "Privat",
         "folder": "Posteingang",
+        "folders": ["Posteingang"],
         "categories": [],
         "hasAttachments": False,
         "fromMe": False,
@@ -81,6 +88,87 @@ def test_sends_bearer_token_to_base_url():
     request = server.requests[0]
     assert request.headers["Authorization"] == "Bearer tok"
     assert str(request.url) == f"https://mail.example{BASE}/categories"
+
+
+def token_server(tokens: list[str], categories) -> FakeServer:
+    """Hands out `tokens` in order from /oauth/token."""
+    issued = iter(tokens)
+
+    def token(request: httpx.Request) -> httpx.Response:
+        body = {"token_type": "Bearer", "expires_in": 600, "access_token": next(issued)}
+        return httpx.Response(200, json=body)
+
+    return FakeServer(
+        {("POST", "/oauth/token"): token, ("GET", f"{BASE}/categories"): categories}
+    )
+
+
+def credentials_client(server: FakeServer) -> MailClient:
+    credentials = mail_serviceapi.ClientCredentials(
+        "https://mail.example/", "cid", "sec", scope="mails:read"
+    )
+    return MailClient(
+        "https://mail.example/",
+        credentials,
+        user=3,
+        transport=httpx.MockTransport(server),
+    )
+
+
+def test_client_credentials_fetch_one_token_and_reuse_it():
+    server = token_server(["t1"], httpx.Response(200, json=[]))
+    client = credentials_client(server)
+    client.list_categories()
+    client.list_categories()
+    token_request, *calls = server.requests
+    assert str(token_request.url) == "https://mail.example/oauth/token"
+    form = dict(httpx.QueryParams(token_request.content.decode()))
+    assert form == {
+        "grant_type": "client_credentials",
+        "client_id": "cid",
+        "client_secret": "sec",
+        "scope": "mails:read",
+    }
+    assert [r.headers["Authorization"] for r in calls] == ["Bearer t1"] * 2
+
+
+def test_client_credentials_renew_an_expired_token(monkeypatch):
+    server = token_server(["t1", "t2"], httpx.Response(200, json=[]))
+    client = credentials_client(server)
+    client.list_categories()
+    now = mail_serviceapi.time.monotonic()
+    monkeypatch.setattr(mail_serviceapi.time, "monotonic", lambda: now + 600)
+    client.list_categories()
+    paths = [r.url.path for r in server.requests]
+    assert paths == ["/oauth/token", f"{BASE}/categories"] * 2
+    assert server.requests[-1].headers["Authorization"] == "Bearer t2"
+
+
+def test_client_credentials_retry_once_after_401():
+    answers = iter([httpx.Response(401, json={}), httpx.Response(200, json=[])])
+    sent = []  # the retry reuses the request object: note the header when sent
+
+    def categories(request: httpx.Request) -> httpx.Response:
+        sent.append(request.headers["Authorization"])
+        return next(answers)
+
+    server = token_server(["t1", "t2"], categories)
+    credentials_client(server).list_categories()
+    assert sent == ["Bearer t1", "Bearer t2"]
+    assert [r.url.path for r in server.requests].count("/oauth/token") == 2
+
+
+def test_client_credentials_rejected_raise():
+    server = FakeServer(
+        {
+            ("POST", "/oauth/token"): httpx.Response(
+                401,
+                json={"error": "invalid_client", "error_description": "unknown"},
+            )
+        }
+    )
+    with pytest.raises(MailClientError, match="401 invalid_client: unknown"):
+        credentials_client(server).list_categories()
 
 
 def test_user_defaults_to_the_only_user_of_the_credential():
@@ -224,27 +312,75 @@ def test_get_mail_parses_nested_models():
     assert server.requests[0].url.params["maxBodyChars"] == "100"
 
 
-def test_list_full_mails_gets_each_listed_mail_lazily():
-    pages = [[fake_mail("a"), fake_mail("b")]]
-    detail = fake_mail(
-        "a", bodyCleanMarkdown="Hallo", bodyCleanVersion=1, images=[], to=[], cc=[]
+def test_list_mails_with_content_is_one_request_per_page():
+    content = dict(
+        bodyCleanMarkdown="Hallo",
+        bodyCleanVersion=1,
+        bodyTruncated=False,
+        messageId=None,
+        images=[],
+        to=[],
+        cc=[],
+        attachments=[{"id": "1", "filename": "a.pdf", "mimeType": "application/pdf",
+                      "size": 1, "inline": False, "conversionStatus": "converted",
+                      "markdown": "Text"}],
     )
-    detail["attachments"] = []
-    server = FakeServer(
-        {
-            ("GET", f"{BASE}/mails"): paged(pages),
-            ("GET", f"{BASE}/mails/a"): httpx.Response(200, json=detail),
-            ("GET", f"{BASE}/mails/b"): httpx.Response(200, json=detail),
-        }
+    pages = [[fake_mail("a", **content), fake_mail("b", **content)]]
+    server = FakeServer({("GET", f"{BASE}/mails"): paged(pages)})
+    mails = list(
+        server.client().list_mails(
+            include_content=True, max_body_chars=5000, include_attachment_text=False
+        )
     )
-    mails = server.client().list_full_mails(category="none")
-    first = next(mails)
-    assert isinstance(first, MailDetail) and first.body_clean_markdown == "Hallo"
-    paths = [r.url.path for r in server.requests]
-    assert paths == [f"{BASE}/mails", f"{BASE}/mails/a"]
-    assert server.requests[0].url.params["category"] == "none"
-    assert len(list(mails)) == 1
-    assert server.requests[-1].url.path == f"{BASE}/mails/b"
+    assert all(isinstance(m, MailWithContent) for m in mails)
+    assert mails[0].body_clean_markdown == "Hallo"
+    assert mails[0].attachments[0].markdown == "Text"
+    assert len(server.requests) == 1
+    params = server.requests[0].url.params
+    assert params["includeContent"] == "1"
+    assert params["maxBodyChars"] == "5000"
+    assert params["includeAttachmentText"] == "0"
+
+
+def test_list_full_mails_is_list_mails_with_content():
+    server = FakeServer({("GET", f"{BASE}/mails"): paged([[]])})
+    assert list(server.client().list_full_mails(category="none", limit=50)) == []
+    params = server.requests[0].url.params
+    assert params["includeContent"] == "1" and params["category"] == "none"
+    assert params["limit"] == "50"
+
+
+def test_batch_categorize_mails_posts_all_items_once():
+    answer = {
+        "results": [
+            {"key": "a", "ok": True, "categories": ["Rechnungen"],
+             "categorizedBy": "llm", "droppedCategories": [], "changed": True},
+            {"key": "b", "ok": False,
+             "error": {"code": "unknown_category", "message": "nope"}},
+        ],
+        "succeeded": 1,
+        "failed": 1,
+    }
+    path = f"{BASE}/mails/categorize"
+    server = FakeServer({("POST", path): httpx.Response(200, json=answer)})
+    result = server.client().batch_categorize_mails(
+        [
+            {"key": "a", "categories": ["Rechnungen"]},
+            {"key": "b", "categories": ["X"], "categorized_by": "heuristic"},
+        ],
+        categorized_by="llm",
+    )
+    assert isinstance(result, BatchCategorized)
+    assert (result.succeeded, result.failed) == (1, 1)
+    assert result.results[0].changed is True
+    assert result.results[1].error.code == "unknown_category"
+    assert json.loads(server.requests[0].content) == {
+        "categorizedBy": "llm",
+        "items": [
+            {"key": "a", "categories": ["Rechnungen"]},
+            {"key": "b", "categories": ["X"], "categorizedBy": "heuristic"},
+        ],
+    }
 
 
 def test_categorize_mail_sends_categorized_by():

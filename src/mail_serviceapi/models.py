@@ -111,6 +111,18 @@ class RawMessage(Model):
 
 
 @dataclass(frozen=True, kw_only=True)
+class AttachmentWithText(Model):
+    id: str
+    filename: str
+    mime_type: str
+    size: int
+    inline: bool
+    conversion_status: str | None
+    markdown: str | None = None  # only when there is text and it was asked for
+    truncated: bool | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
 class Mail(Model):
     key: str
     url: str
@@ -123,11 +135,13 @@ class Mail(Model):
     archived: bool
     account: str
     folder: str
+    folders: list[str]
     categories: list[str]
     has_attachments: bool
     from_me: bool
     categorized_by: str | None
     thread_id: str | None = None
+    contacts: list[dict] | None = None  # only with the scope contacts:read
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -143,10 +157,53 @@ class MailDetail(Mail):
 
 
 @dataclass(frozen=True, kw_only=True)
+class MailWithContent(Mail):
+    """A mail of `list_mails(include_content=True)`: the content of `get_mail`."""
+
+    to: list[Address]
+    cc: list[Address]
+    message_id: str | None
+    body_clean_markdown: str
+    body_clean_version: int
+    body_truncated: bool
+    images: list[Image]
+    attachments: list[AttachmentWithText]
+    body_markdown: str | None = None  # only with include_full_markdown
+
+
+@dataclass(frozen=True, kw_only=True)
 class Categorized(Mail):
     dropped_categories: list[str]
     moved_to: str | None = None
     move_conflict: list[str] | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class BatchError(Model):
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class BatchResult(Model):
+    """One mail of `batch_categorize_mails`: `ok`, or `error` says why not."""
+
+    key: str
+    ok: bool
+    categories: list[str] | None = None
+    categorized_by: str | None = None
+    dropped_categories: list[str] | None = None
+    changed: bool | None = None
+    moved_to: str | None = None
+    move_conflict: list[str] | None = None
+    error: BatchError | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class BatchCategorized(Model):
+    results: list[BatchResult]
+    succeeded: int
+    failed: int
 
 
 @dataclass(frozen=True, kw_only=True)

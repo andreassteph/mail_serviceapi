@@ -20,7 +20,7 @@ SPEC = json.loads(
     )
 )
 SCHEMAS = SPEC["components"]["schemas"]
-SKIPPED = {"requestToken"}  # bearer token only: no token exchange
+SKIPPED = {"requestToken"}  # not a method: ClientCredentials, an httpx.Auth
 PAGES = {"MailPage", "ChangePage"}  # hidden by the iterators
 CONVENIENCE = {"close", "list_full_mails"}  # built on operations, not one
 

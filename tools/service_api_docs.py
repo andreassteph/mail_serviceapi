@@ -3,7 +3,7 @@
 Run:   uv run python tools/service_api_docs.py [URL]
 
 Downloads the OpenAPI document (default: the public one at
-https://ttt.stephanides.at/api/documentation/openapi.json, no credentials
+https://mail.stephanides.at/api/documentation/openapi.json, no credentials
 needed) and writes two files:
 
 - docs/service-api.openapi.json: the document itself, the machine-readable
@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-DEFAULT_URL = "https://ttt.stephanides.at/api/documentation/openapi.json"
+DEFAULT_URL = "https://mail.stephanides.at/api/documentation/openapi.json"
 DOCS = Path(__file__).resolve().parent.parent / "docs"
 METHODS = ("get", "post", "put", "patch", "delete")
 
