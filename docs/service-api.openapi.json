@@ -3,7 +3,7 @@
   "info": {
     "title": "Mailclient service API",
     "description": "REST API for scripts and backend services: read mail, sort it into categories, create drafts. Every request is scoped to one user named in the path. Scripts and assistants that prefer tools use the MCP server instead, which offers the same capabilities with the same rules (see the guide \"REST or MCP\" in the documentation).",
-    "version": "0.11.3"
+    "version": "0.12.1"
   },
   "servers": [
     {
@@ -518,7 +518,7 @@
           "Categories"
         ],
         "summary": "List the category tree",
-        "description": "The categories as a flat list, parents before children. The identifier everywhere is the full path (`Rechnungen/Strom`). `description` is the user's own note on what belongs in a category: the best hint for sorting. Counts cover mails that are not archived. MCP equivalent: `list_categories`.",
+        "description": "The categories as a flat list, parents before children. The identifier everywhere is the full path (`Rechnungen/Strom`). `description` is the user's own note on what belongs in a category: the best hint for sorting; `sortRules` is the user's longer sorting guidance as Markdown (null = none; `includeSortRules=false` leaves it out). Counts cover mails that are not archived. MCP equivalent: `list_categories`.",
         "externalDocs": {
           "description": "Documentation",
           "url": "/help/api/categories.md#get-categories"
@@ -527,6 +527,16 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "includeSortRules",
+            "in": "query",
+            "description": "Default true. false leaves sortRules out of every category (shorter result when only names are needed).",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
           }
         ],
         "responses": {
@@ -632,7 +642,7 @@
             "$ref": "#/components/responses/Forbidden"
           },
           "422": {
-            "description": "An argument is invalid: `invalid_argument` (also a duplicate or reserved name), `unknown_category` (the parent) or `ambiguous_name`.",
+            "description": "An argument is invalid: `invalid_argument` (also a duplicate or reserved name), `unknown_category` (the parent), `ambiguous_name` or `sort_rules_too_long`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -703,7 +713,7 @@
             "$ref": "#/components/responses/Forbidden"
           },
           "422": {
-            "description": "An argument is invalid: `invalid_argument` (also a duplicate name, a move below itself or a target folder), `missing_argument`, `unknown_category` or `ambiguous_name`.",
+            "description": "An argument is invalid: `invalid_argument` (also a duplicate name, a move below itself or a target folder), `missing_argument`, `unknown_category`, `ambiguous_name` or `sort_rules_too_long`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2183,6 +2193,394 @@
         ]
       }
     },
+    "/api/v1/service/users/{user}/corrections": {
+      "get": {
+        "tags": [
+          "Corrections"
+        ],
+        "summary": "List corrections between sources",
+        "description": "Where one source changed what another had decided about a mail's categories, newest first: a mail was categorized by `fromSource` (`llm`, `vector`, `user`, ...) and later changed by `toSource`. Use it to see where a classifier was wrong. `kind` is `replaced`, `added` or `removed` (with `before`, `after`, `added`, `removed`, `kept` as category paths), or `rejected_suggestion` (the user rejected a suggestion of `fromSource`). The same source editing again is no correction (`sameSource=true` lists those). Mail text is not exported: read it with `GET /mails/{key}`, or pass `includeMail` for subject, sender and date. MCP equivalent: `list_corrections`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/corrections.md#get-corrections"
+        },
+        "operationId": "listCorrections",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "The source that decided first, e.g. \"llm\"; several comma separated (\"llm,vector\"). \"any_algorithm\" stands for every source except user and system. Look up names with list_sources.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "The source that changed it, e.g. \"user\".",
+            "schema": {
+              "type": "string",
+              "maxLength": 32
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "description": "Only corrections that added or removed this category, by full path from list_categories.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "replaced (a category removed and another added), added, removed, or rejected_suggestion.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "replaced",
+                "added",
+                "removed",
+                "rejected_suggestion"
+              ]
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Only corrections made at or after this time: an ISO 8601 time or a duration before now (\"4d\", \"2w\"). A rejected suggestion counts at the time of the rejection.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Only mails sent before this time; same forms as since. Together: {\"since\":\"2w\",\"until\":\"1w\"} is the week before last.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sameSource",
+            "in": "query",
+            "description": "true: list only edits where the same source changed its own earlier decision (these are no corrections otherwise).",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "includeRejectedSuggestions",
+            "in": "query",
+            "description": "Default true. false leaves rejected suggestions out.",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "name": "includeMail",
+            "in": "query",
+            "description": "true: every record also has the mail's subject, from, receivedAt, createdAt and changedAt (untrusted text written by the sender); the key is always there.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Corrections per call, 1 to 200. E.g. 50.",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The nextCursor of the previous call, with the same filters; leave out for the first call.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of corrections.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "description": "A filter is invalid: `invalid_argument`, `invalid_time_filter`, `invalid_cursor`, `unknown_category` or `ambiguous_name`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "mails:read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/corrections/summary": {
+      "get": {
+        "tags": [
+          "Corrections"
+        ],
+        "summary": "Count corrections",
+        "description": "Counts corrections (same filters as the list) grouped by `from` and `to`, optionally also by category or day. Also returns `confirmed` (suggestions of each source that the user accepted) and `categorizations` (how many categorizations each source made in the period), so a correction rate is the categorizations of a source against its corrections. MCP equivalent: `summarize_corrections`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/corrections.md#get-correctionssummary"
+        },
+        "operationId": "summarizeCorrections",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "The source that decided first, e.g. \"llm\"; several comma separated (\"llm,vector\"). \"any_algorithm\" stands for every source except user and system. Look up names with list_sources.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "The source that changed it, e.g. \"user\".",
+            "schema": {
+              "type": "string",
+              "maxLength": 32
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "description": "Only corrections that added or removed this category, by full path from list_categories.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "replaced (a category removed and another added), added, removed, or rejected_suggestion.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "replaced",
+                "added",
+                "removed",
+                "rejected_suggestion"
+              ]
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Only corrections made at or after this time: an ISO 8601 time or a duration before now (\"4d\", \"2w\"). A rejected suggestion counts at the time of the rejection.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Only mails sent before this time; same forms as since. Together: {\"since\":\"2w\",\"until\":\"1w\"} is the week before last.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sameSource",
+            "in": "query",
+            "description": "true: list only edits where the same source changed its own earlier decision (these are no corrections otherwise).",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "includeRejectedSuggestions",
+            "in": "query",
+            "description": "Default true. false leaves rejected suggestions out.",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "name": "groupBy",
+            "in": "query",
+            "description": "Also count per category (added or removed ones) or per day.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "category",
+                "day"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The counts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionSummary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "description": "A filter is invalid: `invalid_argument`, `invalid_time_filter`, `unknown_category` or `ambiguous_name`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "mails:read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/sources": {
+      "get": {
+        "tags": [
+          "Corrections"
+        ],
+        "summary": "List the sources seen",
+        "description": "Every source name the user's data has seen (values of `categorizedBy` and of suggestion sources), with how often it categorized, how many mails it currently decided and how many suggestions it made. Look here before choosing a `categorizedBy` or suggestion `source`, so you reuse the exact name. `user` and `system` are reserved. Names are only reported, never enforced. MCP equivalent: `list_sources`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/corrections.md#get-sources"
+        },
+        "operationId": "listSources",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The sources.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SourceName"
+                  }
+                },
+                "example": [
+                  {
+                    "name": "user",
+                    "reserved": true,
+                    "firstSeen": "2026-09-01T08:00:00Z",
+                    "lastSeen": "2026-10-15T09:12:00Z",
+                    "categorizations": 42,
+                    "currentMails": 310,
+                    "suggestions": 0
+                  },
+                  {
+                    "name": "llm",
+                    "reserved": false,
+                    "firstSeen": "2026-10-01T10:00:00Z",
+                    "lastSeen": "2026-10-15T09:00:00Z",
+                    "categorizations": 1204,
+                    "currentMails": 980,
+                    "suggestions": 17
+                  }
+                ]
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "mails:read"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/service/users/{user}/drafts": {
       "post": {
         "tags": [
@@ -2360,6 +2758,14 @@
             }
           },
           {
+            "name": "suggested",
+            "in": "query",
+            "description": "true: only mails whose conversation has a pending category suggestion (see suggestedCategories).",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "archived",
             "in": "query",
             "description": "true: only archived mails, false: only mails that are not archived. E.g. false.",
@@ -2371,6 +2777,15 @@
             "name": "categorizedBy",
             "in": "query",
             "description": "Only mails whose categories were last set by this source (user, llm, ...), or \"none\" for never categorized. E.g. \"llm\".",
+            "schema": {
+              "type": "string",
+              "maxLength": 32
+            }
+          },
+          {
+            "name": "previousCategorizedBy",
+            "in": "query",
+            "description": "Only mails whose categories were set by this source before the last change (user, llm, ...), or \"none\" when there was none. With categorizedBy=user and previousCategorizedBy=llm: what the user took over from the LLM.",
             "schema": {
               "type": "string",
               "maxLength": 32
@@ -2390,6 +2805,52 @@
             "description": "Only mails sent before this time; same forms as since. Together: {\"since\":\"2w\",\"until\":\"1w\"} is the week before last.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "changedSince",
+            "in": "query",
+            "description": "Only mails changed here at or after this time (changedAt): an ISO 8601 time or a duration before now (\"12h\", \"4d\"). For polling: pass the newest changedAt you have seen, with orderBy=changed. Same forms as since.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "changedUntil",
+            "in": "query",
+            "description": "Only mails changed here before this time (changedAt); same forms as since.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "createdSince",
+            "in": "query",
+            "description": "Only mails first stored here at or after this time (createdAt), not the time they were sent: an ISO 8601 time or a duration before now (\"12h\", \"4d\"). Same forms as since.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "createdUntil",
+            "in": "query",
+            "description": "Only mails first stored here before this time (createdAt); same forms as since.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "orderBy",
+            "in": "query",
+            "description": "Sort order, always newest first: date (when the mail was sent, the default), changed (changedAt) or created (createdAt). A cursor only fits the order it came from.",
+            "schema": {
+              "type": "string",
+              "default": "date",
+              "enum": [
+                "date",
+                "changed",
+                "created"
+              ]
             }
           },
           {
@@ -2496,6 +2957,8 @@
                       "subject": "Ihre Stromrechnung",
                       "preview": "Im Anhang finden Sie ...",
                       "date": "2026-09-30T08:12:00Z",
+                      "createdAt": "2026-09-30T09:00:12Z",
+                      "changedAt": "2026-09-30T09:00:12Z",
                       "unread": true,
                       "archived": false,
                       "account": "Privat",
@@ -2982,6 +3445,358 @@
           {
             "oauth2": [
               "mails:categorize"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/mails/{key}/category-suggestions": {
+      "post": {
+        "tags": [
+          "Mails"
+        ],
+        "summary": "Suggest a category for a mail",
+        "description": "Proposes a category for the mail's whole conversation when you are not sure enough to set it. Nothing changes on the mail: the suggestion is pending and the user decides in the app. The same mail and category again updates the pending suggestion; a pair the user rejected before answers `result: rejected` and is not reopened; a category the mail already has answers `409 already_assigned`. At most 3 suggestions wait per conversation (`409 too_many_suggestions` when the new one is weaker than all). MCP equivalent: `suggest_category`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/mails.md#post-mailskeycategory-suggestions"
+        },
+        "operationId": "suggestCategory",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "$ref": "#/components/parameters/KeyPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CategorySuggest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The suggestion was created and is pending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategorySuggestionResult"
+                },
+                "example": {
+                  "key": "Zk3o1v9mQfV2uTn8aYb4Ew",
+                  "category": "Reisen",
+                  "result": "created",
+                  "status": "pending",
+                  "source": "llm",
+                  "note": "Flugbestätigung nach Wien",
+                  "confidence": 80,
+                  "message": "Pending: nothing changed on the mail; the user decides in the app."
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The pending suggestion was updated (`result: updated`), or the user rejected this category for the conversation before (`result: rejected`, nothing created).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategorySuggestionResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No such mail for this user (`unknown_key`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`already_assigned` (the mail has the category) or `too_many_suggestions`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An argument is invalid: `invalid_argument` (also a bad `source` or a note over 300 characters), `missing_argument`, `unknown_category` or `ambiguous_name`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "mails:categorize"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/mails/{key}/category-suggestions/{category}": {
+      "delete": {
+        "tags": [
+          "Mails"
+        ],
+        "summary": "Withdraw a pending suggestion",
+        "description": "Withdraws the pending suggestion for this category of the mail's conversation, for example when new information makes it wrong. The category is a full path; slashes stay as they are in the URL. A suggestion that is not pending answers `409 suggestion_not_pending`. MCP equivalent: `withdraw_category_suggestion`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/mails.md#delete-mailskeycategory-suggestionscategory"
+        },
+        "operationId": "withdrawCategorySuggestion",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "$ref": "#/components/parameters/KeyPath"
+          },
+          {
+            "name": "category",
+            "in": "path",
+            "description": "The category to suggest, by full path from list_categories, e.g. \"Rechnungen/Strom\".",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Reisen"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The suggestion is withdrawn.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "category": {
+                      "type": "string"
+                    },
+                    "withdrawn": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                },
+                "example": {
+                  "key": "Zk3o1v9mQfV2uTn8aYb4Ew",
+                  "category": "Reisen",
+                  "withdrawn": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No such mail for this user (`unknown_key`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`suggestion_not_pending`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The category is unknown: `unknown_category` or `ambiguous_name`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "mails:categorize"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/service/users/{user}/mails/{key}/category-suggestions/{category}/decision": {
+      "post": {
+        "tags": [
+          "Mails"
+        ],
+        "summary": "Accept or reject a suggestion",
+        "description": "Decides the pending suggestion for the whole conversation. `accept` adds the category to every mail of the conversation like `PUT /mails/{key}/categories` (auto-move runs; `categorizedBy` is yours, not `user`, because it is not a human decision); `reject` keeps the suggestion as rejected so it is not offered again. Needs the scope `mails:decide`, which is not part of `mails:categorize`: decide only what the user asked you to decide. MCP equivalent: `decide_category_suggestion`.",
+        "externalDocs": {
+          "description": "Documentation",
+          "url": "/help/api/mails.md#post-mailskeycategory-suggestionscategorydecision"
+        },
+        "operationId": "decideCategorySuggestion",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserPath"
+          },
+          {
+            "$ref": "#/components/parameters/KeyPath"
+          },
+          {
+            "name": "category",
+            "in": "path",
+            "description": "The category to suggest, by full path from list_categories, e.g. \"Rechnungen/Strom\".",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "Reisen"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CategorySuggestionDecide"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The decision and the mail as it is now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "category": {
+                      "type": "string"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "accepted",
+                        "rejected"
+                      ]
+                    },
+                    "mail": {
+                      "$ref": "#/components/schemas/Mail"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No such mail for this user (`unknown_key`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`suggestion_not_pending`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An argument is invalid: `invalid_argument` (also a bad `categorizedBy`), `missing_argument`, `unknown_category` or `ambiguous_name`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "oauth2": [
+              "mails:decide"
             ]
           }
         ]
@@ -3756,6 +4571,8 @@
           "subject",
           "preview",
           "date",
+          "createdAt",
+          "changedAt",
           "unread",
           "archived",
           "account",
@@ -3764,7 +4581,8 @@
           "categories",
           "hasAttachments",
           "fromMe",
-          "categorizedBy"
+          "categorizedBy",
+          "previousCategorizedBy"
         ],
         "properties": {
           "key": {
@@ -3793,7 +4611,17 @@
             "type": "string"
           },
           "date": {
-            "description": "When the mail was sent (UTC).",
+            "description": "When the mail was sent, as its Date header says (UTC); the time the sender wrote, not a local event.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdAt": {
+            "description": "When the mail was first stored here (UTC): the first import, or the moment a mail written in the app was saved. Independent of date: an old mail imported today has an old date and a new createdAt.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "changedAt": {
+            "description": "The last time something about the mail changed here (UTC), at second precision: its categories, linked contacts (also when a category or contact it uses is renamed or moved), read, archived or folder state, delete or restore, a category suggestion on its conversation, or text and images attached to it. Starts equal to createdAt. Poll with changedSince and orderBy=changed; use \"changedAt >= last seen\" and de-duplicate by key, because several changes can share a second.",
             "type": "string",
             "format": "date-time"
           },
@@ -3847,6 +4675,20 @@
               "string",
               "null"
             ]
+          },
+          "previousCategorizedBy": {
+            "description": "Who set the categories before the last change, null when there was none. With categorizedBy it shows what one source changed of another.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggestedCategories": {
+            "description": "Category suggestions waiting for the user's decision on the mail's conversation, most confident first. Nothing is applied until the user accepts.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SuggestedCategory"
+            }
           },
           "threadId": {
             "description": "Present when the mail belongs to a conversation of more than one mail.",
@@ -4608,11 +5450,19 @@
               "teal",
               "lime",
               "amber",
-              "pink"
+              "pink",
+              "stone"
             ]
           },
           "description": {
             "description": "The user's own note on what belongs here: the best hint for sorting.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sortRules": {
+            "description": "The user's sorting guidance for this category as Markdown (criteria, examples, exclusions); null = none. Left out when `includeSortRules=false`.",
             "type": [
               "string",
               "null"
@@ -4630,6 +5480,365 @@
             "type": "integer"
           },
           "unreadCount": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "SuggestedCategory": {
+        "required": [
+          "category",
+          "note",
+          "confidence",
+          "source",
+          "status"
+        ],
+        "properties": {
+          "category": {
+            "description": "Full path of the suggested category.",
+            "type": "string",
+            "example": "Reisen"
+          },
+          "note": {
+            "description": "Why, as written by the suggesting service (untrusted text).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "integer",
+            "maximum": 100,
+            "minimum": 0
+          },
+          "source": {
+            "description": "Who suggested it.",
+            "type": "string",
+            "example": "llm"
+          },
+          "status": {
+            "description": "Only pending suggestions are listed.",
+            "type": "string",
+            "enum": [
+              "pending"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "CategorySuggest": {
+        "required": [
+          "category"
+        ],
+        "properties": {
+          "category": {
+            "description": "The category to suggest, by full path from list_categories, e.g. \"Rechnungen/Strom\".",
+            "type": "string",
+            "example": "Reisen"
+          },
+          "note": {
+            "description": "Why: shown to the user next to the suggestion as text. Up to 300 characters.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "Flugbestätigung nach Wien",
+            "maxLength": 300
+          },
+          "confidence": {
+            "description": "How sure you are, 0 to 100 (default 50). At most 3 suggestions wait per conversation; a weaker one is dropped for a stronger.",
+            "type": "integer",
+            "default": 50,
+            "maximum": 100,
+            "minimum": 0
+          },
+          "source": {
+            "description": "Who suggests, e.g. \"llm\" or \"vector\". Lowercase letters, digits and _ . : -, max 32; left out: the client name. \"user\" and \"system\" are reserved.",
+            "type": "string",
+            "example": "llm",
+            "maxLength": 32
+          }
+        },
+        "type": "object"
+      },
+      "CategorySuggestionResult": {
+        "required": [
+          "key",
+          "category",
+          "result",
+          "status",
+          "source",
+          "note",
+          "confidence",
+          "message"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "result": {
+            "description": "`rejected`: the user rejected this category for the conversation before; nothing was created.",
+            "type": "string",
+            "enum": [
+              "created",
+              "updated",
+              "rejected"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "rejected"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "integer"
+          },
+          "message": {
+            "description": "Says that the suggestion is pending and the user decides in the app.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CategorySuggestionDecide": {
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "description": "accept adds the category to every mail of the conversation (as categorize_mail would), reject keeps the suggestion as rejected so it is not offered again.",
+            "type": "string",
+            "enum": [
+              "accept",
+              "reject"
+            ]
+          },
+          "categorizedBy": {
+            "description": "With accept: the source stored as categorizedBy on the mails (it is not a human decision). Who decided, remembered on the mail, e.g. \"llm\" or \"heuristic\". Lowercase letters, digits and _ . : -, max 32. \"user\" and \"system\" are reserved.",
+            "type": "string",
+            "example": "my-script",
+            "default": "api"
+          }
+        },
+        "type": "object"
+      },
+      "Correction": {
+        "required": [
+          "at",
+          "channel",
+          "clientId",
+          "mail",
+          "fromSource",
+          "toSource",
+          "kind",
+          "before",
+          "after",
+          "added",
+          "removed",
+          "kept",
+          "note"
+        ],
+        "properties": {
+          "at": {
+            "description": "When the correcting edit was made.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "channel": {
+            "description": "app, api or mcp.",
+            "type": "string"
+          },
+          "clientId": {
+            "description": "The service client or token that made the edit.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mail": {
+            "description": "The mail: `key`, and with `includeMail` also `subject`, `from`, `receivedAt`, `createdAt` and `changedAt` (untrusted text written by the sender).",
+            "type": "object"
+          },
+          "fromSource": {
+            "description": "The source that decided before.",
+            "type": "string",
+            "example": "llm"
+          },
+          "toSource": {
+            "description": "The source that changed it.",
+            "type": "string",
+            "example": "user"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "replaced",
+              "added",
+              "removed",
+              "rejected_suggestion"
+            ]
+          },
+          "before": {
+            "description": "Categories before, full paths.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "after": {
+            "description": "Categories after, full paths.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "kept": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "note": {
+            "description": "For `rejected_suggestion`: the suggestion's note (untrusted text).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "CorrectionPage": {
+        "required": [
+          "data",
+          "nextCursor"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Correction"
+            }
+          },
+          "nextCursor": {
+            "description": "The nextCursor of the previous call, with the same filters; leave out for the first call.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "CorrectionSummary": {
+        "required": [
+          "period",
+          "total",
+          "groups",
+          "confirmed",
+          "categorizations"
+        ],
+        "properties": {
+          "period": {
+            "description": "The resolved `since` and `until` (null when not given).",
+            "type": "object"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "groups": {
+            "description": "Counts: `from`, `to`, `count`, and `category` or `day` with `groupBy`.",
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "confirmed": {
+            "description": "Suggestions the user accepted, per source: `from`, `count`.",
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "categorizations": {
+            "description": "Categorizations made in the period, per source: `from`, `count`.",
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "type": "object"
+      },
+      "SourceName": {
+        "required": [
+          "name",
+          "reserved",
+          "firstSeen",
+          "lastSeen",
+          "categorizations",
+          "currentMails",
+          "suggestions"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "llm"
+          },
+          "reserved": {
+            "description": "true for `user` and `system`.",
+            "type": "boolean"
+          },
+          "firstSeen": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "lastSeen": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "categorizations": {
+            "description": "Log entries with this source.",
+            "type": "integer"
+          },
+          "currentMails": {
+            "description": "Mails whose `categorizedBy` it is.",
+            "type": "integer"
+          },
+          "suggestions": {
+            "description": "Suggestions made by it.",
             "type": "integer"
           }
         },
@@ -4662,6 +5871,14 @@
             ],
             "maxLength": 5000
           },
+          "sortRules": {
+            "description": "Markdown text that says what belongs in this category (criteria, examples, exclusions). Read by assistants and other algorithms; the server does not evaluate it. Up to 5000 characters.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 5000
+          },
           "color": {
             "description": "Left out: the server picks the next free color.",
             "type": "string",
@@ -4671,7 +5888,8 @@
               "teal",
               "lime",
               "amber",
-              "pink"
+              "pink",
+              "stone"
             ]
           }
         },
@@ -4700,6 +5918,14 @@
             ],
             "maxLength": 5000
           },
+          "sortRules": {
+            "description": "New sort rules as one Markdown text; replaces the whole text, null or \"\" clears it, left out keeps it. Up to 5000 characters.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 5000
+          },
           "color": {
             "description": "New color, one of the listed names.",
             "type": "string",
@@ -4709,7 +5935,8 @@
               "teal",
               "lime",
               "amber",
-              "pink"
+              "pink",
+              "stone"
             ]
           },
           "parent": {
@@ -4938,6 +6165,10 @@
     {
       "name": "Drafts",
       "description": "Drafts for the user to review and send."
+    },
+    {
+      "name": "Corrections",
+      "description": "Where one source changed what another decided, and the source names seen."
     },
     {
       "name": "Contacts",

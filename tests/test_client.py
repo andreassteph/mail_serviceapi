@@ -28,6 +28,8 @@ def fake_mail(key: str, **extra) -> dict:
         "subject": f"Rechnung {key}",
         "preview": "Ihre Abschlagszahlung",
         "date": "2026-09-01T08:00:00+02:00",
+        "createdAt": "2026-09-01T06:05:00+00:00",
+        "changedAt": "2026-09-02T07:00:00+00:00",
         "unread": True,
         "archived": False,
         "account": "Privat",
@@ -37,6 +39,7 @@ def fake_mail(key: str, **extra) -> dict:
         "hasAttachments": False,
         "fromMe": False,
         "categorizedBy": None,
+        "previousCategorizedBy": None,
         "someFutureField": "ignored",
         **extra,
     }
@@ -342,6 +345,19 @@ def test_list_mails_with_content_is_one_request_per_page():
     assert params["includeAttachmentText"] == "0"
 
 
+def test_list_mails_filters_and_orders_by_created_and_changed():
+    server = FakeServer({("GET", f"{BASE}/mails"): paged([[fake_mail("a")]])})
+    since = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    (mail,) = server.client().list_mails(
+        changed_since=since, created_until="1d", order_by="changed"
+    )
+    assert mail.created_at.year == 2026 and mail.changed_at > mail.created_at
+    assert mail.previous_categorized_by is None and mail.suggested_categories is None
+    params = server.requests[0].url.params
+    assert params["changedSince"] == since.isoformat()
+    assert params["createdUntil"] == "1d" and params["orderBy"] == "changed"
+
+
 def test_list_full_mails_is_list_mails_with_content():
     server = FakeServer({("GET", f"{BASE}/mails"): paged([[]])})
     assert list(server.client().list_full_mails(category="none", limit=50)) == []
@@ -504,3 +520,114 @@ def test_rate_limit_gives_up_after_max_retries(monkeypatch):
         server.client(max_retries=2).list_categories()
     assert raised.value.code == "rate_limited"
     assert len(server.requests) == 3
+
+
+def test_suggest_withdraw_and_decide_category_suggestion():
+    base = f"{BASE}/mails/a/category-suggestions"
+    result = {
+        "key": "a", "category": "Rechnungen/Strom", "result": "created",
+        "status": "pending", "source": "llm", "note": None, "confidence": 70,
+        "message": "ok",
+    }
+    server = FakeServer(
+        {
+            ("POST", base): httpx.Response(201, json=result),
+            ("DELETE", f"{base}/Rechnungen/Strom"): httpx.Response(
+                200, json={"key": "a", "category": "Rechnungen/Strom", "withdrawn": True}
+            ),
+            ("POST", f"{base}/Rechnungen/Strom/decision"): httpx.Response(
+                200,
+                json={
+                    "key": "a", "category": "Rechnungen/Strom",
+                    "decision": "accepted", "mail": fake_mail("a"),
+                },
+            ),
+        }
+    )
+    client = server.client()
+    made = client.suggest_category("a", "Rechnungen/Strom", confidence=70, source="llm")
+    assert made.result == "created" and made.note is None
+    assert json.loads(server.requests[0].content) == {
+        "category": "Rechnungen/Strom", "confidence": 70, "source": "llm"
+    }
+    assert client.withdraw_category_suggestion("a", "Rechnungen/Strom") is True
+    decision = client.decide_category_suggestion("a", "Rechnungen/Strom", "accept")
+    assert decision.decision == "accepted" and decision.mail.key == "a"
+    assert json.loads(server.requests[2].content) == {"action": "accept"}
+
+
+def test_list_corrections_sends_from_and_pages():
+    correction = {
+        "at": "2026-09-01T08:00:00+00:00", "channel": "api", "clientId": None,
+        "mail": {"key": "a"}, "fromSource": "llm", "toSource": "user",
+        "kind": "replaced", "before": ["A"], "after": ["B"], "added": ["B"],
+        "removed": ["A"], "kept": [], "note": None,
+    }
+    server = FakeServer({("GET", f"{BASE}/corrections"): paged([[correction]])})
+    (item,) = server.client().list_corrections(
+        from_="llm", same_source=False, include_mail=True
+    )
+    assert item.from_source == "llm" and item.removed == ["A"]
+    params = server.requests[0].url.params
+    assert params["from"] == "llm" and params["sameSource"] == "0"
+    assert params["includeMail"] == "1"
+
+
+def test_save_and_update_contact_send_only_given_fields():
+    contact = {"id": "7", "kind": "person", "name": "Lena", "company": {"id": "2", "name": "A"},
+               "addresses": [{"address": "l@a.at", "receivedCount": 3}],
+               "updatedAt": "2026-09-01T08:00:00+00:00"}
+    server = FakeServer(
+        {
+            ("POST", f"{BASE}/contacts"): httpx.Response(201, json=contact),
+            ("PUT", f"{BASE}/contacts/7"): httpx.Response(200, json=contact),
+        }
+    )
+    client = server.client()
+    saved = client.save_contact(kind="person", first_name="Lena", company=None)
+    assert saved.company.name == "A" and saved.addresses[0].received_count == 3
+    assert json.loads(server.requests[0].content) == {
+        "kind": "person", "firstName": "Lena", "company": None
+    }
+    client.update_contact("7", postal_addresses=[{"city": "Wien"}])
+    assert json.loads(server.requests[1].content) == {
+        "postalAddresses": [{"city": "Wien"}]
+    }
+
+
+def test_contacts_addresses_and_suggestions_page_by_their_own_key():
+    server = FakeServer(
+        {
+            ("GET", f"{BASE}/contacts"): httpx.Response(
+                200, json={"contacts": [{"id": "1", "name": "A"}], "nextCursor": None}
+            ),
+            ("GET", f"{BASE}/addresses"): httpx.Response(
+                200,
+                json={"addresses": [{"address": "a@b.at", "contact": {"id": "1"}}],
+                      "nextCursor": None},
+            ),
+            ("GET", f"{BASE}/suggestions"): httpx.Response(
+                200, json={"suggestions": [{"id": "9", "score": 80}], "nextCursor": None}
+            ),
+            ("PUT", f"{BASE}/addresses/a@b.at"): httpx.Response(
+                200, json={"address": "a@b.at", "ignored": True}
+            ),
+        }
+    )
+    client = server.client()
+    assert [c.name for c in client.list_contacts(kind="person")] == ["A"]
+    assert next(client.list_addresses(linked=True)).contact.id == "1"
+    assert next(client.list_suggestions(min_score=60)).score == 80
+    assert client.update_address("a@b.at", ignored=True).ignored is True
+    assert json.loads(server.requests[-1].content) == {"ignored": True}
+    assert server.requests[1].url.params["linked"] == "1"
+
+
+def test_set_contact_avatar_uploads_a_file_as_multipart():
+    path = f"{BASE}/contacts/7/avatar"
+    server = FakeServer(
+        {("PUT", path): httpx.Response(200, json={"id": "7", "avatarSize": {"width": 128, "height": 128}})}
+    )
+    result = server.client().set_contact_avatar("7", avatar=b"\x89PNG")
+    assert result.avatar_size["width"] == 128
+    assert server.requests[0].headers["content-type"].startswith("multipart/form-data")

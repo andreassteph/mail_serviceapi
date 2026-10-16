@@ -6,6 +6,7 @@ tools/service_api_docs.py, then fix whatever this reports.
 
 import inspect
 import json
+import keyword
 from dataclasses import MISSING, fields
 from pathlib import Path
 
@@ -21,7 +22,7 @@ SPEC = json.loads(
 )
 SCHEMAS = SPEC["components"]["schemas"]
 SKIPPED = {"requestToken"}  # not a method: ClientCredentials, an httpx.Auth
-PAGES = {"MailPage", "ChangePage"}  # hidden by the iterators
+PAGES = {"MailPage", "ChangePage", "ContactList", "CorrectionPage"}  # hidden by the iterators
 CONVENIENCE = {"close", "list_full_mails"}  # built on operations, not one
 
 
@@ -41,17 +42,24 @@ def operations() -> list[tuple[str, dict]]:
     ]
 
 
+def python_name(name: str) -> str:
+    """The method's parameter for an API name; a keyword gets a trailing _."""
+    name = snake(name)
+    return name + "_" if keyword.iskeyword(name) else name
+
+
 def expected_parameters(op: dict) -> dict[str, bool]:
     """snake_case parameter name -> required, as the method should take it."""
     expected = {}
     for p in map(deref, op.get("parameters", [])):
         if p["name"] not in ("user", "cursor"):
-            expected[snake(p["name"])] = p.get("required", False)
+            expected[python_name(p["name"])] = p.get("required", False)
     body = op.get("requestBody", {}).get("content", {}).get("application/json")
     if body:
         schema = deref(body["schema"])
         for name in schema.get("properties", {}):
-            expected[snake(name)] = name in schema.get("required", [])
+            if python_name(name) not in expected:  # not a path parameter again
+                expected[python_name(name)] = name in schema.get("required", [])
     return expected
 
 

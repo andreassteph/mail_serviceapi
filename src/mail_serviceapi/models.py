@@ -123,6 +123,17 @@ class AttachmentWithText(Model):
 
 
 @dataclass(frozen=True, kw_only=True)
+class SuggestedCategory(Model):
+    """A pending category suggestion; `note` is untrusted text."""
+
+    category: str
+    note: str | None
+    confidence: int
+    source: str
+    status: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class Mail(Model):
     key: str
     url: str
@@ -131,6 +142,8 @@ class Mail(Model):
     subject: str
     preview: str
     date: datetime
+    created_at: datetime  # first stored here, not when it was sent
+    changed_at: datetime
     unread: bool
     archived: bool
     account: str
@@ -140,7 +153,9 @@ class Mail(Model):
     has_attachments: bool
     from_me: bool
     categorized_by: str | None
+    previous_categorized_by: str | None
     thread_id: str | None = None
+    suggested_categories: list[SuggestedCategory] | None = None
     contacts: list[dict] | None = None  # only with the scope contacts:read
 
 
@@ -225,6 +240,7 @@ class Category(Model):
     parent: str | None
     mail_count: int
     unread_count: int
+    sort_rules: str | None = None  # Markdown; None = none (or left out)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -232,3 +248,194 @@ class Draft(Model):
     draft_key: str
     mail: dict | None
     url: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class CategorySuggestionResult(Model):
+    key: str
+    category: str
+    result: str  # created, updated or rejected
+    status: str  # pending or rejected
+    source: str
+    note: str | None
+    confidence: int
+    message: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class CategorySuggestionDecision(Model):
+    """Answer of `decide_category_suggestion`: the mail as it is now."""
+
+    key: str
+    category: str
+    decision: str  # accepted or rejected
+    mail: Mail
+
+
+@dataclass(frozen=True, kw_only=True)
+class Correction(Model):
+    """Where `to_source` changed what `from_source` decided about a mail.
+    `mail` is `{key}` plus subject, from, ... only with `include_mail`; its text
+    is untrusted."""
+
+    at: datetime
+    channel: str
+    client_id: str | None
+    mail: dict
+    from_source: str
+    to_source: str
+    kind: str  # replaced, added, removed or rejected_suggestion
+    before: list[str]
+    after: list[str]
+    added: list[str]
+    removed: list[str]
+    kept: list[str]
+    note: str | None
+
+
+@dataclass(frozen=True, kw_only=True)
+class CorrectionSummary(Model):
+    period: dict
+    total: int
+    groups: list[dict]
+    confirmed: list[dict]
+    categorizations: list[dict]
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceName(Model):
+    name: str
+    reserved: bool
+    first_seen: datetime | None
+    last_seen: datetime | None
+    categorizations: int
+    current_mails: int
+    suggestions: int
+
+
+# -- contacts ------------------------------------------------------------------
+
+
+@dataclass(frozen=True, kw_only=True)
+class ContactRef(Model):
+    id: str | None = None
+    name: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ContactAddress(Model):
+    address: str
+    label: str | None = None
+    received_count: int | None = None
+    sent_count: int | None = None
+    last_seen_at: datetime | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class Phone(Model):
+    number: str
+    label: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class Url(Model):
+    url: str
+    label: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class PostalAddress(Model):
+    label: str | None = None
+    street: str | None = None
+    postal_code: str | None = None
+    city: str | None = None
+    region: str | None = None
+    country: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class Contact(Model):
+    id: str | None = None
+    kind: str | None = None  # person or company
+    name: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    middle_names: str | None = None
+    name_prefix: str | None = None
+    name_suffix: str | None = None
+    nickname: str | None = None
+    company: ContactRef | None = None
+    job_title: str | None = None
+    birthday: str | None = None  # YYYY-MM-DD
+    notes: str | None = None
+    domains: list[str] | None = None
+    link_all_domain_addresses: bool | None = None
+    addresses: list[ContactAddress] | None = None
+    phones: list[Phone] | None = None
+    urls: list[Url] | None = None
+    postal_addresses: list[PostalAddress] | None = None
+    has_avatar: bool | None = None
+    created_by: str | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ContactWithAvatarSize(Contact):
+    avatar_size: dict | None = None  # {width, height}
+
+
+@dataclass(frozen=True, kw_only=True)
+class ImportItem(Model):
+    name: str | None = None
+    action: str | None = None  # created, updated or skipped
+    reason: str | None = None
+    contact_id: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ImportReport(Model):
+    dry_run: bool | None = None
+    created: int | None = None
+    updated: int | None = None
+    skipped: int | None = None
+    items: list[ImportItem] | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class Suggestion(Model):
+    """A contact suggestion for an address (not a category suggestion)."""
+
+    id: str | None = None
+    address: str | None = None
+    kind: str | None = None  # join or new
+    reason: str | None = None
+    score: int | None = None
+    source: str | None = None
+    note: str | None = None
+    contact_id: str | None = None
+    proposed: dict | None = None  # for kind "new"
+    status: str | None = None  # pending, accepted or rejected
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class PoolAddress(Model):
+    address: str | None = None
+    name: str | None = None
+    contact: ContactRef | None = None
+    label: str | None = None
+    received_count: int | None = None
+    sent_count: int | None = None
+    copied_count: int | None = None
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    ignored: bool | None = None
+    suggestion: dict | None = None  # the best pending suggestion
+
+
+@dataclass(frozen=True, kw_only=True)
+class SuggestionDecision(Model):
+    """Answer of `decide_suggestion`; `contact` is None after a reject."""
+
+    address: PoolAddress
+    contact: Contact | None = None

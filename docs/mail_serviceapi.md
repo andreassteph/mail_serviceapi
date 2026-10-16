@@ -48,6 +48,21 @@ The filters are the API's: `view`, `category` (a full path, `"none"` or
 `categorized_by`, `since` and `until` (a `datetime`, an ISO time or a duration
 such as `"4d"`), `q` (full-text search), `contact` and `limit` (the page size, 1 to 500).
 
+Every `Mail` has `created_at` (first stored here, not when it was sent) and
+`changed_at`. Filter with `created_since`/`created_until` and
+`changed_since`/`changed_until` (same forms as `since`), and sort with
+`order_by="date"` (sent, the default), `"changed"` or `"created"`. To poll for
+news, pass the newest `changed_at` you have seen:
+
+```python
+for mail in client.list_mails(changed_since=last_seen, order_by="changed"):
+    ...
+```
+
+`previous_categorized_by` and `suggested_categories` show who set the categories
+before the last change and the pending suggestions; `suggested=True` and
+`previous_categorized_by=` filter on them.
+
 With `include_content=True` every mail is a `MailWithContent`: the fields of
 `get_mail` (clean body, recipients, images, attachments with text) come with
 the list, so no `get_mail` per mail is needed. Pages hold at most 100 mails;
@@ -102,6 +117,52 @@ The items are independent: a failed one does not stop the others, so retry only
 the failed keys. An item may carry its own `"categorized_by"`.
 
 `create_draft` saves a draft for you to review and never sends mail.
+
+## Suggest instead of deciding
+
+When you are not sure enough to categorize, propose a category. Nothing changes
+on the mail; the user decides in the app:
+
+```python
+client.suggest_category(mail.key, "Rechnungen/Strom", confidence=60, source="mailclient_sort")
+client.withdraw_category_suggestion(mail.key, "Rechnungen/Strom")
+```
+
+`suggest_category` answers with `result` ("created", "updated" or "rejected": the
+user rejected this pair before). A mail lists its pending suggestions in
+`suggested_categories`. `decide_category_suggestion(key, category, "accept")`
+needs the scope `mails:decide`: use it only for what the user asked you to
+decide. `list_categories(include_sort_rules=False)` leaves out the sort rules
+(Markdown guidance per category, set with `sort_rules=` in `create_category` and
+`update_category`).
+
+## Corrections and sources
+
+`list_corrections(from_="llm", to="user")` yields where one source changed what
+another decided (`from_` is the API's `from`, a Python keyword).
+`summarize_corrections(group_by="category")` counts them next to how often each
+source categorized, and `list_sources()` shows the exact source names to reuse
+for `categorized_by`.
+
+## Contacts
+
+```python
+company = client.save_contact(kind="company", name="Kunde A GmbH", domains=["kunde-a.at"])
+lena = client.save_contact(kind="person", first_name="Lena", company=company.id)
+client.update_contact(lena.id, addresses=["lena@kunde-a.at"])
+```
+
+`save_contact` creates (without `id`) or changes (with `id`); `update_contact(id,
+...)` changes. Only the fields you pass change, lists replace the old list, and
+`None` sends null (`company=None` removes the company). `list_contacts`,
+`list_addresses` and `list_suggestions` page lazily like `list_mails`.
+`get_contact`/`list_contacts` take `format="jcard"` for the raw jCard arrays.
+`update_address(address, contact_id=...)` links, unlinks, labels or ignores an
+address in the pool; `propose_suggestion` and `decide_suggestion` handle
+contact suggestions. `set_contact_avatar(id, url=...)` takes `image` (base64),
+`url` or `avatar` (file bytes); `delete_contact_avatar` removes it.
+`export_contacts()` returns vCard text; `import_contacts(vcard)` only reports
+until you pass `dry_run=False`.
 
 ## Models
 

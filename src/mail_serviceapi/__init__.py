@@ -21,6 +21,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import datetime
+from urllib.parse import quote
 from typing import Any, Self
 
 import httpx
@@ -31,11 +32,22 @@ from mail_serviceapi.models import (
     BatchCategorized,
     Categorized,
     Category,
+    CategorySuggestionDecision,
+    CategorySuggestionResult,
     Change,
+    Contact,
+    ContactWithAvatarSize,
+    Correction,
+    CorrectionSummary,
     Draft,
+    ImportReport,
     Mail,
     MailDetail,
     MailWithContent,
+    PoolAddress,
+    SourceName,
+    Suggestion,
+    SuggestionDecision,
     User,
 )
 
@@ -127,6 +139,27 @@ def _drop_unset(values: dict) -> dict:
     return {k: v for k, v in values.items() if v is not UNSET}
 
 
+def _camel(name: str) -> str:
+    head, *rest = name.split("_")
+    return head + "".join(word.capitalize() for word in rest)
+
+
+def _body(values: dict) -> dict:
+    """A request body from a method's arguments: camelCase keys, UNSET left out
+    (None is kept: it is JSON null)."""
+    return {_camel(k): v for k, v in values.items() if v is not UNSET}
+
+
+def _query(values: dict) -> dict:
+    """Query parameters: camelCase keys, None left out, bools as 1/0, datetimes
+    as ISO text."""
+    return {
+        _camel(k.rstrip("_")): _flag(v) if isinstance(v, bool) else _time(v)
+        for k, v in values.items()
+        if v is not None
+    }
+
+
 def _time(value: str | datetime | None) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else value
 
@@ -216,13 +249,13 @@ class MailClient:
             user = self.user
         return f"/api/v1/service/users/{user}"
 
-    def _pages(self, path: str, params: dict) -> Iterator[dict]:
+    def _pages(self, path: str, params: dict, key: str = "data") -> Iterator[dict]:
         cursor = None
         while True:
             page = self._request(
                 "GET", path, params=_drop_none({**params, "cursor": cursor})
             ).json()
-            yield from page["data"]
+            yield from page[key]
             cursor = page.get("nextCursor")
             if not cursor:
                 return
@@ -236,9 +269,16 @@ class MailClient:
 
     # -- categories ------------------------------------------------------------
 
-    def list_categories(self, *, user: int | str | None = None) -> list[Category]:
-        """The category tree as a flat list, parents before children."""
-        response = self._request("GET", f"{self._base(user)}/categories")
+    def list_categories(
+        self, *, include_sort_rules: bool | None = None, user: int | str | None = None
+    ) -> list[Category]:
+        """The category tree as a flat list, parents before children.
+        `include_sort_rules=False` leaves each category's `sort_rules` out."""
+        response = self._request(
+            "GET",
+            f"{self._base(user)}/categories",
+            params=_query({"include_sort_rules": include_sort_rules}),
+        )
         return [Category.from_json(c) for c in response.json()]
 
     def create_category(
@@ -247,12 +287,21 @@ class MailClient:
         *,
         parent: str | None = None,
         description: str | None = None,
+        sort_rules: str | None = None,
         color: str | None = None,
         user: int | str | None = None,
     ) -> Category:
-        """Add a category (`name` is its own name, `parent` a full path)."""
+        """Add a category (`name` is its own name, `parent` a full path).
+        `sort_rules` is Markdown guidance on what belongs here (up to 5000
+        characters)."""
         body = _drop_none(
-            {"name": name, "parent": parent, "description": description, "color": color}
+            {
+                "name": name,
+                "parent": parent,
+                "description": description,
+                "sortRules": sort_rules,
+                "color": color,
+            }
         )
         response = self._request("POST", f"{self._base(user)}/categories", json=body)
         return Category.from_json(response.json())
@@ -263,17 +312,20 @@ class MailClient:
         *,
         name: str = UNSET,
         description: str | None = UNSET,
+        sort_rules: str | None = UNSET,
         color: str = UNSET,
         parent: str | None = UNSET,
         user: int | str | None = None,
     ) -> Category:
         """Change only the fields given. `category` is the current full path;
-        `parent=None` makes it a root, `description=None` clears it."""
+        `parent=None` makes it a root, `description=None` clears it,
+        `sort_rules` (None or "" clears) replaces the whole Markdown text."""
         body = _drop_unset(
             {
                 "category": category,
                 "name": name,
                 "description": description,
+                "sortRules": sort_rules,
                 "color": color,
                 "parent": parent,
             }
@@ -298,6 +350,13 @@ class MailClient:
         until: str | datetime | None = None,
         q: str | None = None,
         contact: str | None = None,
+        suggested: bool | None = None,
+        previous_categorized_by: str | None = None,
+        changed_since: str | datetime | None = None,
+        changed_until: str | datetime | None = None,
+        created_since: str | datetime | None = None,
+        created_until: str | datetime | None = None,
+        order_by: str | None = None,
         limit: int | None = None,
         include_content: bool | None = None,
         max_body_chars: int | None = None,
@@ -312,7 +371,14 @@ class MailClient:
         when the current one is used up, so only one page is ever held and
         leaving the loop early stops further requests. `limit` is the page size
         (1 to 500; 1 to 100 with `include_content`). `since`/`until` take a
-        datetime, an ISO time or a duration such as "4d".
+        datetime, an ISO time or a duration such as "4d" and filter by when the mail
+        was sent. `created_since`/`created_until` filter by when it was first
+        stored here (`created_at`), `changed_since`/`changed_until` by when it
+        last changed here (`changed_at`; same forms). `order_by` is "date" (sent,
+        the default), "changed" or "created", always newest first; a cursor only
+        fits its order. To poll for news: pass the newest `changed_at` you have
+        seen as `changed_since` with `order_by="changed"`. `suggested=True` keeps
+        mails with a pending category suggestion.
 
         With `include_content=True` every item is a `MailWithContent`: the
         content of `get_mail` comes with the list, so no `get_mail` per mail is
@@ -332,6 +398,13 @@ class MailClient:
             "until": _time(until),
             "q": q,
             "contact": contact,
+            "suggested": _flag(suggested),
+            "previousCategorizedBy": previous_categorized_by,
+            "changedSince": _time(changed_since),
+            "changedUntil": _time(changed_until),
+            "createdSince": _time(created_since),
+            "createdUntil": _time(created_until),
+            "orderBy": order_by,
             "limit": limit,
             "includeContent": _flag(include_content),
             "maxBodyChars": max_body_chars,
@@ -433,6 +506,63 @@ class MailClient:
         )
         return BatchCategorized.from_json(response.json())
 
+    def suggest_category(
+        self,
+        key: str,
+        category: str,
+        *,
+        note: str | None = UNSET,
+        confidence: int = UNSET,
+        source: str = UNSET,
+        user: int | str | None = None,
+    ) -> CategorySuggestionResult:
+        """Propose a category for the mail's conversation when you are not sure
+        enough to set it. Nothing changes on the mail; the user decides in the
+        app. `result` says whether the suggestion was created, updated or (the
+        user rejected it before) rejected. 409 `already_assigned` and
+        `too_many_suggestions` raise `MailClientError`."""
+        body = _body(
+            {
+                "category": category,
+                "note": note,
+                "confidence": confidence,
+                "source": source,
+            }
+        )
+        response = self._request(
+            "POST", f"{self._base(user)}/mails/{key}/category-suggestions", json=body
+        )
+        return CategorySuggestionResult.from_json(response.json())
+
+    def withdraw_category_suggestion(
+        self, key: str, category: str, *, user: int | str | None = None
+    ) -> bool:
+        """Withdraw the pending suggestion for `category` (a full path); a
+        suggestion that is not pending raises 409 `suggestion_not_pending`."""
+        path = f"{self._base(user)}/mails/{key}/category-suggestions/" + quote(
+            category, safe="/"
+        )
+        return self._request("DELETE", path).json()["withdrawn"]
+
+    def decide_category_suggestion(
+        self,
+        key: str,
+        category: str,
+        action: str,
+        *,
+        categorized_by: str | None = None,
+        user: int | str | None = None,
+    ) -> CategorySuggestionDecision:
+        """Accept or reject the pending suggestion for the whole conversation
+        (`action` is "accept" or "reject"). Needs the scope `mails:decide`: decide
+        only what the user asked you to decide."""
+        path = f"{self._base(user)}/mails/{key}/category-suggestions/" + quote(
+            category, safe="/"
+        )
+        body = _drop_none({"action": action, "categorizedBy": categorized_by})
+        response = self._request("POST", path + "/decision", json=body)
+        return CategorySuggestionDecision.from_json(response.json())
+
     # -- drafts ----------------------------------------------------------------
 
     def create_draft(
@@ -495,3 +625,403 @@ class MailClient:
         """One image of the mail's body."""
         path = f"{self._base(user)}/mails/{key}/images/{image_id}"
         return self._request("GET", path).content
+
+    # -- corrections -----------------------------------------------------------
+
+    def list_corrections(
+        self,
+        *,
+        from_: str | None = None,
+        to: str | None = None,
+        category: str | None = None,
+        kind: str | None = None,
+        since: str | datetime | None = None,
+        until: str | datetime | None = None,
+        same_source: bool | None = None,
+        include_rejected_suggestions: bool | None = None,
+        include_mail: bool | None = None,
+        limit: int | None = None,
+        user: int | str | None = None,
+    ) -> Iterator[Correction]:
+        """Where one source changed what another had decided about a mail's
+        categories, newest first, one at a time (paged lazily). `from_` is the
+        API's `from`: the source that decided first ("llm", "llm,vector",
+        "any_algorithm"); `to` the one that changed it. `kind` is replaced, added,
+        removed or rejected_suggestion."""
+        params = _query(
+            {
+                "from_": from_,
+                "to": to,
+                "category": category,
+                "kind": kind,
+                "since": since,
+                "until": until,
+                "same_source": same_source,
+                "include_rejected_suggestions": include_rejected_suggestions,
+                "include_mail": include_mail,
+                "limit": limit,
+            }
+        )
+        for correction in self._pages(f"{self._base(user)}/corrections", params):
+            yield Correction.from_json(correction)
+
+    def summarize_corrections(
+        self,
+        *,
+        from_: str | None = None,
+        to: str | None = None,
+        category: str | None = None,
+        kind: str | None = None,
+        since: str | datetime | None = None,
+        until: str | datetime | None = None,
+        same_source: bool | None = None,
+        include_rejected_suggestions: bool | None = None,
+        group_by: str | None = None,
+        user: int | str | None = None,
+    ) -> CorrectionSummary:
+        """Counts of corrections (same filters as `list_corrections`), grouped by
+        from and to, optionally also by "category" or "day" (`group_by`)."""
+        params = _query(
+            {
+                "from_": from_,
+                "to": to,
+                "category": category,
+                "kind": kind,
+                "since": since,
+                "until": until,
+                "same_source": same_source,
+                "include_rejected_suggestions": include_rejected_suggestions,
+                "group_by": group_by,
+            }
+        )
+        response = self._request(
+            "GET", f"{self._base(user)}/corrections/summary", params=params
+        )
+        return CorrectionSummary.from_json(response.json())
+
+    def list_sources(self, *, user: int | str | None = None) -> list[SourceName]:
+        """Every source name seen (values of `categorized_by` and suggestion
+        sources): look here to reuse the exact name."""
+        response = self._request("GET", f"{self._base(user)}/sources")
+        return [SourceName.from_json(s) for s in response.json()]
+
+    # -- contacts --------------------------------------------------------------
+
+    def list_contacts(
+        self,
+        *,
+        q: str | None = None,
+        kind: str | None = None,
+        company: str | None = None,
+        limit: int | None = None,
+        format: str | None = None,
+        user: int | str | None = None,
+    ) -> Iterator[Contact | list]:
+        """The user's contacts, one at a time (paged lazily; `limit` is the page
+        size, 1 to 100). `kind` is "person" or "company", `company` a company's id
+        or exact name. With `format="jcard"` every item is the raw jCard array."""
+        params = _query(
+            {"q": q, "kind": kind, "company": company, "limit": limit, "format": format}
+        )
+        for contact in self._pages(
+            f"{self._base(user)}/contacts", params, key="contacts"
+        ):
+            yield contact if format == "jcard" else Contact.from_json(contact)
+
+    def save_contact(
+        self,
+        *,
+        id: str = UNSET,
+        kind: str = UNSET,
+        name: str = UNSET,
+        first_name: str = UNSET,
+        last_name: str = UNSET,
+        middle_names: str = UNSET,
+        name_prefix: str = UNSET,
+        name_suffix: str = UNSET,
+        nickname: str = UNSET,
+        company: str | None = UNSET,
+        job_title: str = UNSET,
+        birthday: str | None = UNSET,
+        notes: str = UNSET,
+        addresses: list[str] = UNSET,
+        domains: list[str] = UNSET,
+        link_all_domain_addresses: bool = UNSET,
+        phones: list[dict] = UNSET,
+        urls: list[dict] = UNSET,
+        postal_addresses: list[dict] = UNSET,
+        user: int | str | None = None,
+    ) -> Contact:
+        """Create a contact (without `id`; `kind` "person" or "company" is then
+        required) or change one (with `id`): only the fields given change, lists
+        replace the old list. `company=None` and `birthday=None` remove them.
+        `phones` are `{"label", "number"}`, `urls` `{"label", "url"}`,
+        `postal_addresses` `{"label", "street", "postalCode", "city", "region",
+        "country"}`."""
+        body = _body(
+            {
+                "id": id,
+                "kind": kind,
+                "name": name,
+                "first_name": first_name,
+                "last_name": last_name,
+                "middle_names": middle_names,
+                "name_prefix": name_prefix,
+                "name_suffix": name_suffix,
+                "nickname": nickname,
+                "company": company,
+                "job_title": job_title,
+                "birthday": birthday,
+                "notes": notes,
+                "addresses": addresses,
+                "domains": domains,
+                "link_all_domain_addresses": link_all_domain_addresses,
+                "phones": phones,
+                "urls": urls,
+                "postal_addresses": postal_addresses,
+            }
+        )
+        response = self._request("POST", f"{self._base(user)}/contacts", json=body)
+        return Contact.from_json(response.json())
+
+    def get_contact(
+        self,
+        id: str,
+        *,
+        format: str | None = None,
+        user: int | str | None = None,
+    ) -> Contact | list:
+        """One contact; with `format="jcard"` the raw jCard array."""
+        response = self._request(
+            "GET",
+            f"{self._base(user)}/contacts/{id}",
+            params=_query({"format": format}),
+        )
+        data = response.json()
+        return data if format == "jcard" else Contact.from_json(data)
+
+    def update_contact(
+        self,
+        id: str,
+        *,
+        kind: str = UNSET,
+        name: str = UNSET,
+        first_name: str = UNSET,
+        last_name: str = UNSET,
+        middle_names: str = UNSET,
+        name_prefix: str = UNSET,
+        name_suffix: str = UNSET,
+        nickname: str = UNSET,
+        company: str | None = UNSET,
+        job_title: str = UNSET,
+        birthday: str | None = UNSET,
+        notes: str = UNSET,
+        addresses: list[str] = UNSET,
+        domains: list[str] = UNSET,
+        link_all_domain_addresses: bool = UNSET,
+        phones: list[dict] = UNSET,
+        urls: list[dict] = UNSET,
+        postal_addresses: list[dict] = UNSET,
+        user: int | str | None = None,
+    ) -> Contact:
+        """Change the contact `id`; only the fields given change (see
+        `save_contact`)."""
+        body = _body(
+            {
+                "kind": kind,
+                "name": name,
+                "first_name": first_name,
+                "last_name": last_name,
+                "middle_names": middle_names,
+                "name_prefix": name_prefix,
+                "name_suffix": name_suffix,
+                "nickname": nickname,
+                "company": company,
+                "job_title": job_title,
+                "birthday": birthday,
+                "notes": notes,
+                "addresses": addresses,
+                "domains": domains,
+                "link_all_domain_addresses": link_all_domain_addresses,
+                "phones": phones,
+                "urls": urls,
+                "postal_addresses": postal_addresses,
+            }
+        )
+        response = self._request("PUT", f"{self._base(user)}/contacts/{id}", json=body)
+        return Contact.from_json(response.json())
+
+    def delete_contact(self, id: str, *, user: int | str | None = None) -> None:
+        """Delete the contact; its addresses stay in the pool without one."""
+        self._request("DELETE", f"{self._base(user)}/contacts/{id}")
+
+    def set_contact_avatar(
+        self,
+        id: str,
+        *,
+        image: str | None = None,
+        url: str | None = None,
+        avatar: bytes | None = None,
+        user: int | str | None = None,
+    ) -> ContactWithAvatarSize:
+        """Set the contact's picture: give exactly one of `image` (base64), `url`
+        (the server downloads it) or `avatar` (the file's bytes, uploaded as
+        multipart). JPEG, PNG, WebP or GIF up to 2 MB."""
+        path = f"{self._base(user)}/contacts/{id}/avatar"
+        if avatar is not None:
+            kwargs: dict[str, Any] = {
+                "files": {"avatar": avatar},
+                "data": _drop_none({"image": image, "url": url}),
+            }
+        else:
+            kwargs = {"json": _drop_none({"image": image, "url": url})}
+        return ContactWithAvatarSize.from_json(
+            self._request("PUT", path, **kwargs).json()
+        )
+
+    def delete_contact_avatar(self, id: str, *, user: int | str | None = None) -> Contact:
+        """Remove the contact's picture (none is fine)."""
+        response = self._request("DELETE", f"{self._base(user)}/contacts/{id}/avatar")
+        return Contact.from_json(response.json())
+
+    def export_contacts(
+        self,
+        *,
+        ids: str | None = None,
+        q: str | None = None,
+        user: int | str | None = None,
+    ) -> str:
+        """A vCard 4.0 file (text) of at most 200 contacts: the comma separated
+        `ids`, or all matching `q`."""
+        response = self._request(
+            "GET",
+            f"{self._base(user)}/contacts.vcf",
+            params=_query({"ids": ids, "q": q}),
+        )
+        return response.text
+
+    def import_contacts(
+        self,
+        vcard: str,
+        *,
+        dry_run: bool | None = None,
+        user: int | str | None = None,
+    ) -> ImportReport:
+        """Import vCard 3.0/4.0 text: the same UID or address updates, otherwise
+        creates. `dry_run` defaults to true on the server: it only reports until
+        you pass `dry_run=False`."""
+        body = _drop_none({"vcard": vcard, "dryRun": dry_run})
+        response = self._request("POST", f"{self._base(user)}/contacts/import", json=body)
+        return ImportReport.from_json(response.json())
+
+    def list_addresses(
+        self,
+        *,
+        linked: bool | None = None,
+        q: str | None = None,
+        domain: str | None = None,
+        min_interactions: int | None = None,
+        sort: str | None = None,
+        limit: int | None = None,
+        user: int | str | None = None,
+    ) -> Iterator[PoolAddress]:
+        """Every address that appeared in the user's mail with its contact and
+        mail counts, one at a time (paged lazily). `linked` keeps only linked
+        (True) or unlinked (False) addresses; `sort` is "recent" or
+        "interactions"."""
+        params = _query(
+            {
+                "linked": linked,
+                "q": q,
+                "domain": domain,
+                "min_interactions": min_interactions,
+                "sort": sort,
+                "limit": limit,
+            }
+        )
+        for address in self._pages(
+            f"{self._base(user)}/addresses", params, key="addresses"
+        ):
+            yield PoolAddress.from_json(address)
+
+    def update_address(
+        self,
+        address: str,
+        *,
+        contact_id: str | None = UNSET,
+        label: str | None = UNSET,
+        ignored: bool = UNSET,
+        user: int | str | None = None,
+    ) -> PoolAddress:
+        """Link the address to a contact (`contact_id`; None unlinks it), set its
+        `label` (None removes it) or mark it `ignored` ("never suggest")."""
+        path = f"{self._base(user)}/addresses/" + quote(address, safe="@")
+        body = _body({"contact_id": contact_id, "label": label, "ignored": ignored})
+        return PoolAddress.from_json(self._request("PUT", path, json=body).json())
+
+    def list_suggestions(
+        self,
+        *,
+        status: str | None = None,
+        min_score: int | None = None,
+        domain: str | None = None,
+        limit: int | None = None,
+        user: int | str | None = None,
+    ) -> Iterator[Suggestion]:
+        """Contact suggestions for addresses without a contact, newest first, one
+        at a time (paged lazily). `status` is "pending" (default), "accepted" or
+        "rejected"."""
+        params = _query(
+            {"status": status, "min_score": min_score, "domain": domain, "limit": limit}
+        )
+        for suggestion in self._pages(
+            f"{self._base(user)}/suggestions", params, key="suggestions"
+        ):
+            yield Suggestion.from_json(suggestion)
+
+    def propose_suggestion(
+        self,
+        address: str,
+        *,
+        contact_id: str | None = None,
+        proposed: dict | None = None,
+        note: str | None = None,
+        confidence: int | None = None,
+        source: str | None = None,
+        user: int | str | None = None,
+    ) -> Suggestion:
+        """Propose to add an address without a contact to the contact
+        `contact_id`, or to create one (`proposed`: {"type", "name", "firstName",
+        "lastName", "companyId" or "companyName", "mainDomain"}); give exactly
+        one. Stored pending for the user; it never links by itself."""
+        body = _drop_none(
+            _body(
+                {
+                    "address": address,
+                    "contact_id": contact_id,
+                    "proposed": proposed,
+                    "note": note,
+                    "confidence": confidence,
+                    "source": source,
+                }
+            )
+        )
+        response = self._request("POST", f"{self._base(user)}/suggestions", json=body)
+        return Suggestion.from_json(response.json())
+
+    def decide_suggestion(
+        self,
+        id: str,
+        action: str,
+        *,
+        overrides: dict | None = None,
+        user: int | str | None = None,
+    ) -> SuggestionDecision:
+        """Accept (link the address, or create the proposed contact; `overrides`
+        change its fields) or reject ("never offered again") a contact
+        suggestion. `action` is "accept" or "reject"."""
+        body = _drop_none({"action": action, "overrides": overrides})
+        response = self._request(
+            "POST", f"{self._base(user)}/suggestions/{id}/decision", json=body
+        )
+        return SuggestionDecision.from_json(response.json())
