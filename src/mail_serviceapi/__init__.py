@@ -193,6 +193,9 @@ class MailClient:
             auth=None if isinstance(token, str) else token,
             timeout=timeout,
             transport=transport,
+            # no idle keep-alive: a pooled connection the server closed meanwhile
+            # fails a POST with "Server disconnected", which can't be retried safely
+            limits=httpx.Limits(max_keepalive_connections=0),
         )
 
     def close(self) -> None:
